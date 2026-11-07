@@ -175,6 +175,10 @@ static void tokenizer_next_for_template(tokenizer_t *tokenizer, token_t *token)
                     token->rstrip = tokenizer->lstrip_flag = true;
                 goto found;
             }
+            if (cursor == last && *cursor == '}') {
+                cursor++;
+                goto found;
+            }
             // unterminated variable
             cursor = tokenizer->cursor + 2;
             tokenizer->lstrip_flag = false;

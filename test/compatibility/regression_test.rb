@@ -431,6 +431,96 @@ class Liquid514RegressionTest < Minitest::Test
     assert_equal(1, calls)
   end
 
+  [:hash, :lru, :automatic, :disabled].each do |kind|
+    define_method("test_template_expression_cache_#{kind}") do
+      require "lru_redux"
+      cache = case kind
+      when :hash then {}
+      when :lru then LruRedux::Cache.new(10)
+      when :automatic then true
+      when :disabled then false
+      end
+      context = Liquid::ParseContext.new(environment: @environment, expression_cache: cache)
+      template = Liquid::Template.parse(
+        "{% assign x = 1 %}{{ x }}{% assign x = 2 %}{{ x }}{% assign y = 1 %}{{ y }}",
+        context,
+      )
+      assert_equal("121", template.render!)
+      stored = context.instance_variable_get(:@expression_cache)
+      if kind == :disabled
+        assert_nil(stored)
+      else
+        assert_equal(["1", "2", "x", "y"], stored.to_a.map(&:first).sort)
+      end
+    end
+  end
+
+  def test_resource_limits_marshal_preserves_state
+    limits = Liquid::ResourceLimits.new(
+      render_score_limit: 2**100,
+      cumulative_render_score_limit: 12,
+      cumulative_assign_score_limit: 9,
+    )
+    limits.increment_render_score(4)
+    limits.increment_assign_score(3)
+    limits.reset
+    limits.increment_render_score(2)
+    restored = Marshal.load(Marshal.dump(limits))
+    assert_equal(2**100, restored.render_score_limit)
+    assert_nil(restored.render_length_limit)
+    assert_equal(2, restored.render_score)
+    assert_equal(6, restored.cumulative_render_score)
+    assert_equal(3, restored.cumulative_assign_score)
+    refute_predicate(restored, :reached?)
+    assert_raises(Liquid::MemoryError) { restored.increment_assign_score(7) }
+    assert_predicate(Marshal.load(Marshal.dump(restored)), :reached?)
+  end
+
+  def test_resource_limits_marshal_preserves_capture
+    limits = Liquid::ResourceLimits.new({})
+    limits.with_capture do
+      limits.increment_write_score("abcd")
+      restored = Marshal.load(Marshal.dump(limits))
+      restored.increment_write_score("abcdef")
+      assert_equal(6, restored.assign_score)
+    end
+  end
+
+  def test_resource_limits_accept_large_score_increments
+    limits = Liquid::ResourceLimits.new({})
+    limits.increment_render_score(2**100)
+    limits.increment_assign_score(2**100)
+    assert_equal(2**100, limits.render_score)
+    assert_equal(2**100, limits.cumulative_assign_score)
+    limits.reset
+    assert_equal(0, limits.render_score)
+    assert_equal(2**100, limits.cumulative_render_score)
+  end
+
+  def test_nodelist_keeps_nested_block_constants_separate
+    template = parse("{% for x in xs %}{{ x }}{% endfor %}{{ title }}")
+    nodes = template.root.nodelist
+    assert_instance_of(Liquid::For, nodes[0])
+    assert_instance_of(Liquid::Variable, nodes[1])
+    assert_equal("title", nodes[1].name.name)
+    assert_equal("x", nodes[0].nodelist.first.nodelist.first.name.name)
+    assert_equal("12T", template.render!("xs" => [1, 2], "title" => "T"))
+  end
+
+  def test_ascii_output_preserves_compatible_buffer_encoding
+    [Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |encoding|
+      output = String.new(encoding: encoding)
+      assert_same(output, parse("A{{ x }}Z").render!({ "x" => 12 }, output: output))
+      assert_equal("A12Z", output)
+      assert_equal(encoding, output.encoding)
+    end
+  end
+
+  def test_unicode_raw_output_rejects_incompatible_existing_buffer
+    output = "\xFF".b
+    assert_raises(Encoding::CompatibilityError) { parse("é").render!({}, output: output) }
+  end
+
   private
 
   def parse(source, **options)

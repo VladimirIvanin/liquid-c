@@ -38,6 +38,11 @@ typedef struct {
     VALUE sym;
 } filter_desc_t;
 
+enum {
+    VM_VARIABLE_LINE_NUMBER_SIZE = 3,
+    VM_VARIABLE_METADATA_SIZE = VM_VARIABLE_LINE_NUMBER_SIZE + sizeof(uint32_t),
+};
+
 extern filter_desc_t builtin_filters[];
 
 typedef struct vm_assembler {
@@ -85,15 +90,19 @@ static inline void vm_assembler_write_opcode(vm_assembler_t *code, enum opcode o
     c_buffer_write_byte(&code->instructions, op);
 }
 
-static inline uint16_t vm_assembler_write_ruby_constant(vm_assembler_t *code, VALUE constant)
+static inline uint32_t vm_assembler_write_ruby_constant(vm_assembler_t *code, VALUE constant)
 {
     st_table *constants_table = code->constants_table;
     st_data_t index_value;
 
     if (st_lookup(constants_table, constant, &index_value)) {
-        return (uint16_t)index_value;
+        return (uint32_t)index_value;
     } else {
-        uint16_t index = c_buffer_size(&code->constants) / sizeof(VALUE);
+        size_t index = c_buffer_size(&code->constants) / sizeof(VALUE);
+        if (index > UINT32_MAX) {
+            rb_raise(rb_eRangeError, "Too many bytecode constants");
+        }
+
         st_insert(constants_table, constant, index);
         c_buffer_write(&code->constants, &constant, sizeof(VALUE));
         return index;
@@ -115,11 +124,10 @@ static inline void vm_assembler_reserve_stack_size(vm_assembler_t *code, size_t 
 
 static inline void vm_assembler_add_op_with_constant(vm_assembler_t *code, VALUE constant, uint8_t opcode)
 {
-    uint16_t index = vm_assembler_write_ruby_constant(code, constant);
-    uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 3);
+    uint32_t index = vm_assembler_write_ruby_constant(code, constant);
+    uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 5);
     instructions[0] = opcode;
-    instructions[1] = index >> 8;
-    instructions[2] = (uint8_t)index;
+    uint32_to_bytes(index, &instructions[1]);
 }
 
 static inline void vm_assembler_add_leave(vm_assembler_t *code)
@@ -230,11 +238,13 @@ static inline void vm_assembler_add_new_int_range(vm_assembler_t *code)
     vm_assembler_write_opcode(code, OP_NEW_INT_RANGE);
 }
 
-static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code, size_t node_line_number)
+static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code, size_t node_line_number, VALUE variable)
 {
-    uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 4);
+    uint32_t variable_index = vm_assembler_write_ruby_constant(code, variable);
+    uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 1 + VM_VARIABLE_METADATA_SIZE);
     instructions[0] = OP_RENDER_VARIABLE_RESCUE;
     uint24_to_bytes((unsigned int)node_line_number, &instructions[1]);
+    uint32_to_bytes(variable_index, &instructions[1 + VM_VARIABLE_LINE_NUMBER_SIZE]);
 }
 
 #endif

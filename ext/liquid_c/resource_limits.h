@@ -2,13 +2,17 @@
 #define LIQUID_RESOURCE_LIMITS
 
 typedef struct resource_limits {
-    long render_length_limit;
-    long render_score_limit;
-    long assign_score_limit;
+    VALUE render_length_limit;
+    VALUE render_score_limit;
+    VALUE assign_score_limit;
+    VALUE cumulative_render_score_limit;
+    VALUE cumulative_assign_score_limit;
+    VALUE render_score;
+    VALUE assign_score;
+    VALUE cumulative_render_score;
+    VALUE cumulative_assign_score;
     bool reached_limit;
     long last_capture_length;
-    long render_score;
-    long assign_score;
 } resource_limits_t;
 
 extern VALUE cLiquidResourceLimits;

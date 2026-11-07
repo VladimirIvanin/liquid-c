@@ -11,13 +11,12 @@ class BlockTest < Minitest::Test
     assert_equal(3, template.root.nodelist.size)
   end
 
-  def test_raise_on_output_with_non_utf8_encoding
+  def test_empty_ascii_output_preserves_compatible_encoding
     output = String.new(encoding: Encoding::ASCII)
     template = Liquid::Template.parse("ascii text")
-    exc = assert_raises(Encoding::CompatibilityError) do
-      template.render!({}, output: output)
-    end
-    assert_equal("non-UTF8 encoded output (US-ASCII) not supported", exc.message)
+    assert_same(output, template.render!({}, output: output))
+    assert_equal("ascii text", output)
+    assert_equal(Encoding::US_ASCII, output.encoding)
   end
 
   def test_write_unicode_characters
@@ -43,13 +42,13 @@ class BlockTest < Minitest::Test
   def test_bug_120_instrument
     calls = []
     Liquid::Usage.stub(:increment, ->(name) { calls << name }) do
-      Liquid::Template.parse("{{ -.1 }}")
+      Liquid::Template.parse("{{ -.1 }}", error_mode: :lax)
     end
     assert_equal(["liquid_c_negative_float_without_integer"], calls)
 
     calls = []
     Liquid::Usage.stub(:increment, ->(name) { calls << name }) do
-      Liquid::Template.parse("{{ .1 }}")
+      Liquid::Template.parse("{{ .1 }}", error_mode: :lax)
     end
     assert_equal([], calls)
   end
@@ -77,15 +76,15 @@ class BlockTest < Minitest::Test
     assert_equal(<<~ASM, block_body.disassemble)
       0x0000: write_raw("raw")
       0x0005: render_variable_rescue(line_number: 2)
-      0x0009: find_static_var("var")
-      0x000c: push_const("none")
-      0x000f: push_const("allow_false")
-      0x0012: push_true
-      0x0013: hash_new(1)
-      0x0015: builtin_filter(name: :default, num_args: 3)
-      0x0018: pop_write
-      0x0019: write_node(#{increment_node.inspect})
-      0x001c: leave
+      0x000d: find_static_var("var")
+      0x0012: push_const("none")
+      0x0017: push_const("allow_false")
+      0x001c: push_true
+      0x001d: hash_new(1)
+      0x001f: builtin_filter(name: :default, num_args: 3)
+      0x0022: pop_write
+      0x0023: write_node(#{increment_node.inspect})
+      0x0028: leave
     ASM
   end
 

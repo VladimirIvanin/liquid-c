@@ -108,7 +108,7 @@ VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, c
         rb_str_catf(output, "0x%04lx: ", ip - start_ip);
 
         if (vm_assembler_opcode_has_constant(*ip)) {
-            uint16_t constant_index = (ip[1] << 8) | ip[2];
+            uint32_t constant_index = bytes_to_uint32(ip + 1);
             constant = RARRAY_AREF(*constants, constant_index);
         }
 
@@ -210,8 +210,8 @@ VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, c
             case OP_FILTER:
             {
                 VALUE filter_name = RARRAY_AREF(constant, 0);
-                uint8_t num_args = RARRAY_AREF(constant, 1);
-                rb_str_catf(output, "filter(name: %+"PRIsVALUE", num_args: %u)\n", filter_name, num_args);
+                unsigned long num_args = NUM2ULONG(RARRAY_AREF(constant, 1));
+                rb_str_catf(output, "filter(name: %+"PRIsVALUE", num_args: %lu)\n", filter_name, num_args);
                 break;
             }
 
@@ -237,10 +237,25 @@ static int merge_constants_table(st_data_t key, st_data_t value, VALUE _arg)
 {
     struct merge_constants_table_func_args *arg = (struct merge_constants_table_func_args *)_arg;
     st_table *dest_hash = arg->hash;
-    uint16_t new_value = value + arg->increment_amount;
+    size_t new_value = value + arg->increment_amount;
+    if (new_value > UINT32_MAX) {
+        rb_raise(rb_eRangeError, "Too many bytecode constants");
+    }
+
     st_insert(dest_hash, key, new_value);
 
     return ST_CONTINUE;
+}
+
+static void offset_constant_index(uint8_t *index_bytes, size_t increment_amount)
+{
+    uint32_t constant_index = bytes_to_uint32(index_bytes);
+    size_t new_constant_index = constant_index + increment_amount;
+    if (new_constant_index > UINT32_MAX) {
+        rb_raise(rb_eRangeError, "Too many bytecode constants");
+    }
+
+    uint32_to_bytes((uint32_t)new_constant_index, index_bytes);
 }
 
 void update_instructions_constants_table_index_ref(c_buffer_t *instructions, size_t increment_amount, c_buffer_t *constants)
@@ -249,10 +264,11 @@ void update_instructions_constants_table_index_ref(c_buffer_t *instructions, siz
 
     while (ip < instructions->data_end) {
         if (vm_assembler_opcode_has_constant(*ip)) {
-            uint16_t constant_index = (ip[1] << 8) | ip[2];
-            uint16_t new_constant_index = constant_index + increment_amount;
-            ip[1] = new_constant_index >> 8;
-            ip[2] = (uint8_t)new_constant_index;
+            offset_constant_index(ip + 1, increment_amount);
+        }
+
+        if (*ip == OP_RENDER_VARIABLE_RESCUE) {
+            offset_constant_index(ip + 1 + VM_VARIABLE_LINE_NUMBER_SIZE, increment_amount);
         }
 
         liquid_vm_next_instruction((const uint8_t **)&ip);

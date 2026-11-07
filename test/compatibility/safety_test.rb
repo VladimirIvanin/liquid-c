@@ -136,4 +136,55 @@ class Liquid514SafetyTest < Minitest::Test
     assert_equal("ok", template.render!(context))
     assert_equal(1, context.registers[:variable_renders])
   end
+
+  def test_variable_render_hook_added_after_compilation
+    template = Liquid::Template.parse("A{{ value }}Z", error_mode: :strict)
+    hook = Module.new do
+      def render(context)
+        context.registers[:late_variable_renders] = context.registers.fetch(:late_variable_renders, 0) + 1
+        super
+      end
+    end
+    Liquid::Variable.prepend(hook)
+    context = Liquid::Context.build(environments: { "value" => "ok" })
+    2.times { assert_equal("AokZ", template.render!(context)) }
+    assert_equal(2, context.registers[:late_variable_renders])
+  end
+
+  def test_recursive_array_output_raises_without_crashing
+    value = []
+    value << value
+    template = Liquid::Template.parse("{{ value }}", error_mode: :strict)
+    assert_raises(SystemStackError) { template.render!("value" => value) }
+    assert_equal("ok", template.render!("value" => "ok"))
+  end
+
+  def test_variable_render_hook_installed_before_extension_load
+    require "open3"
+    require "rbconfig"
+    code = <<~RUBY
+      require "bundler/setup"
+      require "liquid"
+      hook = Module.new do
+        def render(context)
+          context.registers[:calls] = context.registers.fetch(:calls, 0) + 1
+          super
+        end
+      end
+      Liquid::Variable.prepend(hook)
+      unless ENV["LIQUID_ENGINE"] == "pure"
+        $LOAD_PATH.unshift(ENV["LIQUID_C_EXTENSION_DIR"]) if ENV["LIQUID_C_EXTENSION_DIR"]
+        require "liquid/c"
+        Liquid::C.enabled = ENV["LIQUID_ENGINE"] != "disabled"
+        Liquid::ParseContext.liquid_c_nodes_disabled = ENV["LIQUID_ENGINE"] == "no_vm"
+      end
+      context = Liquid::Context.build(environments: { "value" => "ok" })
+      template = Liquid::Template.parse("A{{ value }}Z", error_mode: :strict)
+      print template.render!(context), ":", context.registers[:calls]
+    RUBY
+    command = [RbConfig.ruby, "-Ilib"]
+    stdout, stderr, status = Open3.capture3(*command, "-e", code)
+    assert_predicate(status, :success?, stderr)
+    assert_equal("AokZ:1", stdout)
+  end
 end

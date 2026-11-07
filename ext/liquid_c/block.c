@@ -15,12 +15,7 @@ static ID
     intern_raise_missing_tag_terminator,
     intern_is_blank,
     intern_parse,
-    intern_square_brackets,
-    intern_unknown_tag_in_liquid_tag,
-    intern_ivar_nodelist;
-
-static VALUE tag_registry;
-static VALUE variable_placeholder = Qnil;
+    intern_unknown_tag_in_liquid_tag;
 
 typedef struct tag_markup {
     VALUE name;
@@ -43,6 +38,7 @@ static void ensure_body_compiled(const block_body_t *body)
 static void block_body_mark(void *ptr)
 {
     block_body_t *body = ptr;
+    rb_gc_mark(body->obj);
     if (body->compiled) {
         document_body_entry_mark(&body->as.compiled.document_body_entry);
         rb_gc_mark(body->as.compiled.nodelist);
@@ -228,7 +224,8 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
                 }
 
                 VALUE tag_name = rb_enc_str_new(name_start, name_end - name_start, utf8_encoding);
-                VALUE tag_class = rb_funcall(tag_registry, intern_square_brackets, 1, tag_name);
+                VALUE environment = rb_funcall(parse_context->ruby_obj, rb_intern("environment"), 0);
+                VALUE tag_class = rb_funcall(environment, rb_intern("tag_for_name"), 1, tag_name);
 
                 const char *markup_start = read_while(name_end, end, rb_isspace);
                 VALUE markup = rb_enc_str_new(markup_start, end - markup_start, utf8_encoding);
@@ -305,7 +302,6 @@ static VALUE block_body_parse(VALUE self, VALUE tokenizer_obj, VALUE parse_conte
     return rb_yield_values(2, unknown_tag.name, unknown_tag.markup);
 }
 
-
 static VALUE block_body_freeze(VALUE self)
 {
     block_body_t *body;
@@ -335,7 +331,6 @@ static VALUE block_body_freeze(VALUE self)
 static VALUE block_body_render_to_output_buffer(VALUE self, VALUE context, VALUE output)
 {
     Check_Type(output, T_STRING);
-    check_utf8_encoding(output, "output");
 
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
@@ -390,14 +385,6 @@ static VALUE block_body_remove_blank_strings(VALUE self)
     return Qnil;
 }
 
-static void memoize_variable_placeholder(void)
-{
-    if (variable_placeholder == Qnil) {
-        VALUE cLiquidCVariablePlaceholder = rb_const_get(mLiquidC, rb_intern("VariablePlaceholder"));
-        variable_placeholder = rb_class_new_instance(0, NULL, cLiquidCVariablePlaceholder);
-    }
-}
-
 // Deprecated: avoid using this for the love of performance
 static VALUE block_body_nodelist(VALUE self)
 {
@@ -406,8 +393,6 @@ static VALUE block_body_nodelist(VALUE self)
     ensure_body_compiled(body);
     document_body_entry_t *entry = &body->as.compiled.document_body_entry;
     block_body_header_t *body_header = document_body_get_block_body_header_ptr(entry);
-
-    memoize_variable_placeholder();
 
     if (body->as.compiled.nodelist != Qundef)
         return body->as.compiled.nodelist;
@@ -438,15 +423,19 @@ static VALUE block_body_nodelist(VALUE self)
             }
             case OP_WRITE_NODE:
             {
-                uint16_t constant_index = (ip[1] << 8) | ip[2];
-                VALUE node = RARRAY_AREF(*constants, constant_index);
+                uint32_t constant_index = bytes_to_uint32(ip + 1);
+                VALUE node = RARRAY_AREF(*constants, body_header->constants_offset + constant_index);
                 rb_ary_push(nodelist, node);
                 break;
             }
 
             case OP_RENDER_VARIABLE_RESCUE:
-                rb_ary_push(nodelist, variable_placeholder);
+            {
+                uint32_t variable_index = bytes_to_uint32(ip + 1 + VM_VARIABLE_LINE_NUMBER_SIZE);
+                VALUE variable = RARRAY_AREF(*constants, body_header->constants_offset + variable_index);
+                rb_ary_push(nodelist, variable);
                 break;
+            }
         }
         liquid_vm_next_instruction(&ip);
     }
@@ -470,7 +459,6 @@ static VALUE block_body_disassemble(VALUE self)
         &entry->body->constants
     );
 }
-
 
 static VALUE block_body_add_evaluate_expression(VALUE self, VALUE expression)
 {
@@ -535,19 +523,13 @@ static VALUE block_body_add_filter(VALUE self, VALUE filter_name, VALUE num_args
     return self;
 }
 
-
 void liquid_define_block_body(void)
 {
     intern_raise_missing_variable_terminator = rb_intern("raise_missing_variable_terminator");
     intern_raise_missing_tag_terminator = rb_intern("raise_missing_tag_terminator");
     intern_is_blank = rb_intern("blank?");
     intern_parse = rb_intern("parse");
-    intern_square_brackets = rb_intern("[]");
     intern_unknown_tag_in_liquid_tag = rb_intern("unknown_tag_in_liquid_tag");
-    intern_ivar_nodelist = rb_intern("@nodelist");
-
-    tag_registry = rb_funcall(cLiquidTemplate, rb_intern("tags"), 0);
-    rb_global_variable(&tag_registry);
 
     VALUE cLiquidCBlockBody = rb_define_class_under(mLiquidC, "BlockBody", rb_cObject);
     rb_define_alloc_func(cLiquidCBlockBody, block_body_allocate);
@@ -569,7 +551,4 @@ void liquid_define_block_body(void)
 
     rb_define_method(cLiquidCBlockBody, "add_hash_new", block_body_add_hash_new, 1);
     rb_define_method(cLiquidCBlockBody, "add_filter", block_body_add_filter, 2);
-
-    rb_global_variable(&variable_placeholder);
 }
-

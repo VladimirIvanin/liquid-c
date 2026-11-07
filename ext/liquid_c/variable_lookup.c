@@ -2,6 +2,26 @@
 #include "context.h"
 
 static ID id_has_key, id_aref, id_fetch, id_to_liquid_value;
+static ID id_first, id_last;
+
+static VALUE string_lookup_first_or_last(VALUE string, VALUE key, ID command)
+{
+    VALUE index;
+    if (command == id_first && RSTRING_LEN(key) == 5) {
+        index = INT2FIX(0);
+    } else if (command == id_last && RSTRING_LEN(key) == 4) {
+        index = INT2FIX(-1);
+    } else {
+        return Qundef;
+    }
+
+    VALUE character = rb_funcall(string, id_aref, 1, index);
+    if (NIL_P(character)) {
+        return rb_utf8_str_new_cstr("");
+    }
+
+    return character;
+}
 
 VALUE variable_lookup_key(VALUE context, VALUE object, VALUE key, bool is_command)
 {
@@ -29,6 +49,13 @@ VALUE variable_lookup_key(VALUE context, VALUE object, VALUE key, bool is_comman
             VALUE next_object = rb_funcall(object, intern_key, 0);
             return value_to_liquid_and_set_context(next_object, context);
         }
+
+        if (RB_TYPE_P(object, T_STRING)) {
+            VALUE character = string_lookup_first_or_last(object, key, intern_key);
+            if (character != Qundef) {
+                return character;
+            }
+        }
     }
 
     context_maybe_raise_undefined_variable(context, key);
@@ -41,4 +68,6 @@ void liquid_define_variable_lookup(void)
     id_aref = rb_intern("[]");
     id_fetch = rb_intern("fetch");
     id_to_liquid_value = rb_intern("to_liquid_value");
+    id_first = rb_intern("first");
+    id_last = rb_intern("last");
 }

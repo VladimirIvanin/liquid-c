@@ -74,22 +74,9 @@ bool liquid_vm_filtering(VALUE context)
 
 static void write_fixnum(VALUE output, VALUE fixnum)
 {
-    long long number = RB_NUM2LL(fixnum);
-    int write_length = snprintf(NULL, 0, "%lld", number);
-    long old_size = RSTRING_LEN(output);
-    long new_size = old_size + write_length;
-    long capacity = rb_str_capacity(output);
-
-    if (new_size > capacity) {
-        capacity *= 2;
-        if (new_size > capacity) {
-            capacity = new_size;
-        }
-        rb_str_resize(output, capacity);
-    }
-    rb_str_set_len(output, new_size);
-
-    snprintf(RSTRING_PTR(output) + old_size, write_length + 1, "%lld", number);
+    char buffer[32];
+    int length = snprintf(buffer, sizeof(buffer), "%lld", RB_NUM2LL(fixnum));
+    rb_enc_str_buf_cat(output, buffer, length, utf8_encoding);
 }
 
 static VALUE obj_to_s(VALUE obj)
@@ -103,12 +90,23 @@ static VALUE obj_to_s(VALUE obj)
             rb_obj_class(obj), rb_obj_class(str));
 }
 
+static void write_obj(VALUE output, VALUE obj);
+
+static VALUE write_array(VALUE array, VALUE output, int recursive)
+{
+    if (recursive || ruby_stack_check()) {
+        rb_raise(rb_eSysStackError, "stack level too deep");
+    }
+
+    for (long i = 0; i < RARRAY_LEN(array); i++) {
+        write_obj(output, RARRAY_AREF(array, i));
+    }
+    return Qnil;
+}
+
 static void write_obj(VALUE output, VALUE obj)
 {
     switch (TYPE(obj)) {
-        default:
-            obj = obj_to_s(obj);
-            // fallthrough
         case T_STRING:
             rb_str_buf_append(output, obj);
             break;
@@ -116,21 +114,21 @@ static void write_obj(VALUE output, VALUE obj)
             write_fixnum(output, obj);
             break;
         case T_ARRAY:
-            for (long i = 0; i < RARRAY_LEN(obj); i++)
-            {
-                VALUE item = RARRAY_AREF(obj, i);
-
-                if (RB_UNLIKELY(RB_TYPE_P(item, T_ARRAY))) {
-                    // Normally liquid arrays are flat, but for safety and simplicity we
-                    // leverage ruby's join that detects and raises on a recursion loop
-                    rb_str_buf_append(output, rb_ary_join(item, Qnil));
-                } else {
-                    write_obj(output, item);
-                }
-            }
+            rb_exec_recursive(write_array, obj, output);
             break;
         case T_NIL:
             break;
+        default:
+        {
+            VALUE utils = rb_const_get(mLiquid, rb_intern("Utils"));
+            VALUE string = rb_funcall(utils, id_to_s, 1, obj);
+            if (!RB_TYPE_P(string, T_STRING)) {
+                string = obj_to_s(obj);
+            }
+
+            rb_str_buf_append(output, string);
+            break;
+        }
     }
 }
 
@@ -199,6 +197,7 @@ typedef struct vm_render_until_error_args {
     /* rendering fields */
     VALUE output;
     const uint8_t *node_line_number;
+    bool native_variable_render;
 } vm_render_until_error_args_t;
 
 static VALUE raise_invalid_integer(VALUE unused_arg, VALUE exc)
@@ -237,6 +236,17 @@ static void hash_bulk_insert(long argc, const VALUE *argv, VALUE hash)
 }
 #endif
 
+static const uint8_t *vm_skip_variable_instructions(const uint8_t *ip)
+{
+    enum opcode opcode;
+    do {
+        opcode = *ip;
+        liquid_vm_next_instruction(&ip);
+    } while (opcode != OP_POP_WRITE);
+
+    return ip;
+}
+
 // Actually returns a bool resume_rendering value
 static VALUE vm_render_until_error(VALUE uncast_args)
 {
@@ -245,12 +255,13 @@ static VALUE vm_render_until_error(VALUE uncast_args)
     const uint8_t *ip = args->ip;
     vm_t *vm = args->vm;
     VALUE output = args->output;
-    uint16_t constant_index;
+    uint32_t constant_index;
     VALUE constant = Qnil;
     args->ip = NULL; // used by vm_render_rescue, NULL to indicate that it isn't in a rescue block
 
     while (true) {
-        switch (*ip++) {
+        uint8_t opcode = *ip++;
+        switch (opcode) {
             case OP_LEAVE:
                 return false;
             case OP_PUSH_NIL:
@@ -277,9 +288,9 @@ static VALUE vm_render_until_error(VALUE uncast_args)
             }
             case OP_FIND_STATIC_VAR:
             {
-                constant_index = (ip[0] << 8) | ip[1];
+                constant_index = bytes_to_uint32(ip);
                 constant = constants[constant_index];
-                ip += 2;
+                ip += 4;
                 VALUE value = context_find_variable(&vm->context, constant, Qtrue);
                 vm_stack_push(vm, value);
                 break;
@@ -294,15 +305,15 @@ static VALUE vm_render_until_error(VALUE uncast_args)
             case OP_LOOKUP_CONST_KEY:
             case OP_LOOKUP_COMMAND:
             {
-                constant_index = (ip[0] << 8) | ip[1];
+                constant_index = bytes_to_uint32(ip);
                 constant = constants[constant_index];
-                ip += 2;
+                ip += 4;
                 vm_stack_push(vm, constant);
             }
             /* fallthrough */
             case OP_LOOKUP_KEY:
             {
-                bool is_command = ip[-3] == OP_LOOKUP_COMMAND;
+                bool is_command = opcode == OP_LOOKUP_COMMAND;
                 VALUE key = vm_stack_pop(vm);
                 VALUE object = vm_stack_pop(vm);
                 VALUE result = variable_lookup_key(vm->context.self, object, key, is_command);
@@ -338,11 +349,11 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 unsigned long num_args;
 
                 if (ip[-1] == OP_FILTER) {
-                    constant_index = (ip[0] << 8) | ip[1];
+                    constant_index = bytes_to_uint32(ip);
                     constant = constants[constant_index];
                     filter_name = RARRAY_AREF(constant, 0);
                     num_args = FIX2ULONG(RARRAY_AREF(constant, 1));
-                    ip += 2;
+                    ip += 4;
                 } else {
                     assert(ip[-1] == OP_BUILTIN_FILTER);
                     filter_name = builtin_filters[*ip++].sym;
@@ -370,7 +381,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                     text = (const char *)&ip[1];
                     ip += 1 + size;
                 }
-                rb_str_cat(output, text, size);
+                rb_enc_str_buf_cat(output, text, size, utf8_encoding);
                 resource_limits_increment_write_score(vm->context.resource_limits, output);
                 break;
             }
@@ -390,18 +401,18 @@ static VALUE vm_render_until_error(VALUE uncast_args)
 
             case OP_PUSH_CONST:
             {
-                constant_index = (ip[0] << 8) | ip[1];
+                constant_index = bytes_to_uint32(ip);
                 constant = constants[constant_index];
-                ip += 2;
+                ip += 4;
                 vm_stack_push(vm, constant);
                 break;
             }
 
             case OP_WRITE_NODE:
             {
-                constant_index = (ip[0] << 8) | ip[1];
+                constant_index = bytes_to_uint32(ip);
                 constant = constants[constant_index];
-                ip += 2;
+                ip += 4;
                 rb_funcall(cLiquidBlockBody, id_render_node, 3, vm->context.self, output, constant);
 
                 if (RARRAY_LEN(vm->context.interrupts)) {
@@ -412,13 +423,26 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 break;
             }
             case OP_RENDER_VARIABLE_RESCUE:
+            {
                 // Save state used by vm_render_rescue to rescue from a variable rendering exception
                 args->node_line_number = ip;
                 // vm_render_rescue will iterate from this instruction to the instruction
                 // following OP_POP_WRITE_VARIABLE to resume rendering from
-                ip += 3;
-                args->ip = ip;
+                uint32_t variable_index = bytes_to_uint32(ip + VM_VARIABLE_LINE_NUMBER_SIZE);
+                ip += VM_VARIABLE_METADATA_SIZE;
+
+                if (args->native_variable_render) {
+                    args->ip = ip;
+                    break;
+                }
+
+                VALUE variable = constants[variable_index];
+                ip = vm_skip_variable_instructions(ip);
+                rb_funcall(cLiquidBlockBody, id_render_node, 3, vm->context.self, output, variable);
+                args->ip = NULL;
+                resource_limits_increment_write_score(vm->context.resource_limits, output);
                 break;
+            }
             case OP_POP_WRITE:
             {
                 VALUE var_result = vm_stack_pop(vm);
@@ -498,17 +522,20 @@ void liquid_vm_next_instruction(const uint8_t **ip_ptr)
 
         case OP_BUILTIN_FILTER:
         case OP_PUSH_INT16:
+            ip += 2;
+            break;
+
         case OP_PUSH_CONST:
         case OP_WRITE_NODE:
         case OP_FIND_STATIC_VAR:
         case OP_LOOKUP_CONST_KEY:
         case OP_LOOKUP_COMMAND:
         case OP_FILTER:
-            ip += 2;
+            ip += 4;
             break;
 
         case OP_RENDER_VARIABLE_RESCUE:
-            ip += 3;
+            ip += VM_VARIABLE_METADATA_SIZE;
             break;
 
         case OP_WRITE_RAW_W:
@@ -566,12 +593,7 @@ static VALUE vm_render_rescue(VALUE uncast_args, VALUE exception)
 
     // rescue for variable render, where ip is at the start of the render and we need to
     // skip to the end of the variable render to resume rendering if the error is handled
-    enum opcode last_op;
-    do {
-        last_op = *ip;
-        liquid_vm_next_instruction(&ip);
-    } while (last_op != OP_POP_WRITE);
-    render_args->ip = ip;
+    render_args->ip = vm_skip_variable_instructions(ip);
     // remove temporary stack values from variable evaluation
     vm->stack.data_end = vm->stack.data + args->old_stack_byte_size;
 
@@ -596,6 +618,7 @@ void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE c
         .const_ptr = const_ptr,
         .ip = block_body_instructions_ptr(body),
         .output = output,
+        .native_variable_render = RTEST(rb_funcall(cLiquidVariable, rb_intern("c_native_render?"), 0)),
     };
     vm_render_rescue_args_t rescue_args = {
         .render_args = &render_args,

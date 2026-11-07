@@ -135,9 +135,25 @@ static bool environments_find_variable(VALUE environments, VALUE key, bool stric
     return false;
 }
 
+static VALUE context_find_variable_with_ruby(VALUE self, VALUE key, VALUE raise_on_not_found)
+{
+    VALUE keyword_arguments = rb_hash_new();
+    rb_hash_aset(keyword_arguments, ID2SYM(rb_intern("raise_on_not_found")), raise_on_not_found);
+
+    VALUE arguments[] = { key, keyword_arguments };
+    return rb_funcallv_kw(self, rb_intern("ruby_find_variable"), 2, arguments, RB_PASS_KEYWORDS);
+}
+
 VALUE context_find_variable(context_t *context, VALUE key, VALUE raise_on_not_found)
 {
     VALUE self = context->self;
+    bool is_self_lookup = RB_TYPE_P(key, T_STRING) &&
+        RSTRING_LEN(key) == 4 && memcmp(RSTRING_PTR(key), "self", 4) == 0;
+
+    if (is_self_lookup) {
+        return context_find_variable_with_ruby(self, key, raise_on_not_found);
+    }
+
     VALUE scope = Qnil, variable = Qnil;
 
     VALUE scopes = context->scopes;

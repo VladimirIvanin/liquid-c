@@ -30,13 +30,6 @@ end
 
 module Liquid
   module C
-    # Placeholder for variables in the Liquid::C::BlockBody#nodelist.
-    class VariablePlaceholder
-      class << self
-        private :new
-      end
-    end
-
     class Tokenizer
       MAX_SOURCE_BYTE_SIZE = (1 << 24) - 1
     end
@@ -86,14 +79,6 @@ Liquid::ParseContext.class_eval do
     ruby_new_tokenizer(source, start_line_number: start_line_number, for_liquid_tag: for_liquid_tag)
   end
 
-  def parse_expression(markup)
-    if liquid_c_nodes_disabled?
-      Liquid::Expression.parse(markup)
-    else
-      Liquid::C::Expression.lax_parse(markup)
-    end
-  end
-
   # @api private
   def liquid_c_nodes_disabled?
     # Liquid::Profiler exposes the internal parse tree that we don't want to build when
@@ -134,6 +119,42 @@ module Liquid
 end
 
 Liquid::Variable.class_eval do
+  render_method = instance_method(:render)
+  Liquid::C::VARIABLE_RENDER_METHOD = if render_method.owner == self &&
+      render_method.source_location&.first == instance_method(:render_obj_to_output).source_location&.first
+    render_method
+  end
+
+  class << self
+    def c_native_render?
+      instance_method(:render) == Liquid::C::VARIABLE_RENDER_METHOD
+    end
+
+    def c_parse(markup, parse_context)
+      if /\A\s*-\.\d/.match?(markup)
+        Liquid::Usage.increment("liquid_c_negative_float_without_integer")
+      end
+      new(markup, parse_context)
+    end
+  end
+
+  alias_method :ruby_strict_parse, :strict_parse
+
+  def strict_parse(markup)
+    ruby_strict_parse(markup)
+  rescue Liquid::SyntaxError
+    if !parse_context.liquid_c_nodes_disabled? && [:lax, :warn].include?(parse_context.error_mode)
+      self.class.call_variable_fallback_stats_callback(parse_context)
+    end
+    raise
+  end
+
+  def c_compilable?
+    filters.all? do |_name, args, kwargs|
+      args.size + (kwargs ? 1 : 0) <= 254 && (!kwargs || kwargs.size <= 255)
+    end
+  end
+
   class << self
     # @api private
     def call_variable_fallback_stats_callback(parse_context)
@@ -171,20 +192,18 @@ Liquid::Variable.class_eval do
       parse_context.instance_variable_set(:@error_mode, mode)
     end
   end
-
-  alias_method :ruby_strict_parse, :strict_parse
-
-  def strict_parse(markup)
-    if parse_context.liquid_c_nodes_disabled?
-      ruby_strict_parse(markup)
-    else
-      c_strict_parse(markup)
-    end
-  end
 end
 
 Liquid::StrainerTemplate.class_eval do
   class << self
+    alias_method :ruby_add_filter, :add_filter
+
+    def add_filter(filter)
+      result = ruby_add_filter(filter)
+      @filter_methods_hash&.replace(filter_methods.to_h { |name| [name.to_sym, true] })
+      result
+    end
+
     private
 
     def filter_methods_hash
@@ -232,7 +251,7 @@ Liquid::Context.class_eval do
   end
 
   def c_parse_evaluate(expression)
-    c_evaluate(Liquid::C::Expression.lax_parse(expression))
+    ruby_parse_evaluate(expression)
   end
 end
 
@@ -244,6 +263,8 @@ Liquid::ResourceLimits.class_eval do
           limits[:render_length_limit],
           limits[:render_score_limit],
           limits[:assign_score_limit],
+          limits[:cumulative_render_score_limit],
+          limits[:cumulative_assign_score_limit],
         )
       else
         super

@@ -78,7 +78,8 @@ class VariableTest < Minitest::Test
     context = { "name" => "Bob", "a" => 1, "c" => 3, "e" => 5 }
 
     output = variable_strict_parse("name | filter1 : a , b : c , d : e").render!(context, render_opts)
-    assert_equal('{ filter: :filter1, input: "Bob", args: [1, {"b"=>3, "d"=>5}] }', output)
+    expected_args = [1, { "b" => 3, "d" => 5 }]
+    assert_equal("{ filter: :filter1, input: \"Bob\", args: #{expected_args.inspect} }", output)
 
     output = variable_strict_parse("name | filter1: 1, 2, 3, 4, 5, 6, 7").render!(context, render_opts)
     assert_equal('{ filter: :filter1, input: "Bob", args: [1, 2, 3, 4, 5, 6, 7] }', output)
@@ -217,7 +218,8 @@ class VariableTest < Minitest::Test
 
   def test_render_variable_object
     variable = Liquid::Variable.new("ary | concat: ary2", Liquid::ParseContext.new)
-    assert_instance_of(Liquid::C::VariableExpression, variable.name)
+    assert_instance_of(Liquid::VariableLookup, variable.name)
+    assert_equal(["concat"], variable.filters.map(&:first))
 
     context = Liquid::Context.new("ary" => [1], "ary2" => [2])
     assert_equal([1, 2], variable.render(context))
