@@ -72,6 +72,20 @@ Calculating -------------------------------------
     # run tests
     bundle exec rake
 
+## Liquid 5.14.0 compatibility tests
+
+The `upgrade` branch pins Liquid 5.14.0 and adds an isolated compatibility matrix:
+
+```sh
+bundle install
+bundle exec rake test
+```
+
+This is the regression-test stage: failures reproduce compatibility gaps in the
+unchanged extension. See [the results and reproduction commands](docs/liquid-5.14-compatibility.md)
+and [the source audit](docs/liquid-5.14-source-audit.md). Full logs are written to
+`tmp/compatibility`; Ruby and C coverage have separate tasks.
+
 ## Contributing
 
 1. Fork it ( http://github.com/Shopify/liquid-c/fork )

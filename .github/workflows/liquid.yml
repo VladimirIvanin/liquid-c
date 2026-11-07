@@ -11,6 +11,7 @@ jobs:
           - { ruby: '3.1', allowed-failure: false }
           - { ruby: '3.2', allowed-failure: false }
           - { ruby: '3.3', allowed-failure: false }
+          - { ruby: '3.4', allowed-failure: false }
           - { ruby: ruby-head, allowed-failure: true }
           - { ruby: truffleruby-head, allowed-failure: true }
     name: test (${{ matrix.ruby }})
@@ -36,6 +37,12 @@ jobs:
 
       - run: bundle exec rubocop
         if: matrix.ruby != 'truffleruby-head'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-${{ matrix.ruby }}
+          path: tmp/compatibility
 
   valgrind:
     runs-on: ubuntu-latest

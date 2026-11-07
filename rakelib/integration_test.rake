@@ -1,43 +1,81 @@
 # frozen_string_literal: true
 
 namespace :test do
-  integration_test_config = lambda do |t|
-    t.libs << "lib"
-    t.test_files = ["test/integration_test.rb"]
+  integration_test_config = lambda do |task|
+    task.libs << "lib"
+    task.test_files = ["test/integration_test.rb"]
   end
 
-  desc "run test suite with default parser"
+  desc "Run upstream integration tests with the selected engine and parser"
   Rake::TestTask.new(integration: :compile, &integration_test_config)
 
   namespace :integration do
-    define_env_integration_tests = lambda do |task_name|
-      rake_task = Rake::Task[task_name]
-
-      [
-        [:lax, { "LIQUID_PARSER_MODE" => "lax" }],
-        [:strict, { "LIQUID_PARSER_MODE" => "strict" }],
-        [:without_vm, { "LIQUID_C_DISABLE_VM" => "true" }],
-      ].each do |name, env_vars|
-        task(name) do
-          old_env_values = ENV.to_hash.slice(*env_vars.keys)
-          begin
-            env_vars.each { |key, value| ENV[key] = value }
-            rake_task.invoke
-          ensure
-            old_env_values.each { |key, value| ENV[key] = value }
-            rake_task.reenable
-          end
-        end
+    ["lax", "warn", "strict", "strict2"].each do |mode|
+      task mode => :compile do
+        sh(
+          { "LIQUID_ENGINE" => "c", "LIQUID_PARSER_MODE" => mode, "LIQUID_C_DISABLE_VM" => nil },
+          RbConfig.ruby,
+          "-Ilib",
+          "test/integration_test.rb",
+        )
       end
-
-      task(all: [:lax, :strict, :without_vm])
     end
 
-    define_env_integration_tests.call("test:integration")
+    task without_vm: :compile do
+      sh(
+        { "LIQUID_ENGINE" => "no_vm", "LIQUID_PARSER_MODE" => "strict", "LIQUID_C_DISABLE_VM" => nil },
+        RbConfig.ruby,
+        "-Ilib",
+        "test/integration_test.rb",
+      )
+    end
+
+    task all: :compile do
+      results = ["lax", "warn", "strict", "strict2"].map do |mode|
+        system(
+          { "LIQUID_ENGINE" => "c", "LIQUID_PARSER_MODE" => mode, "LIQUID_C_DISABLE_VM" => nil },
+          RbConfig.ruby,
+          "-Ilib",
+          "test/integration_test.rb",
+        )
+      end
+      results << system(
+        { "LIQUID_ENGINE" => "no_vm", "LIQUID_PARSER_MODE" => "strict", "LIQUID_C_DISABLE_VM" => nil },
+        RbConfig.ruby,
+        "-Ilib",
+        "test/integration_test.rb",
+      )
+      abort("Integration failures") unless results.all?
+    end
 
     RubyMemcheck::TestTask.new(valgrind: :compile, &integration_test_config)
     namespace :valgrind do
-      define_env_integration_tests.call("test:integration:valgrind")
+      configurations = ["lax", "warn", "strict", "strict2"].map { |mode| [mode, "c", mode] }
+      configurations << ["without_vm", "no_vm", "strict"]
+      configurations.each do |name, engine, mode|
+        task name => :compile do
+          sh(
+            { "LIQUID_ENGINE" => engine, "LIQUID_PARSER_MODE" => mode, "LIQUID_C_DISABLE_VM" => nil },
+            RbConfig.ruby,
+            "-S",
+            "rake",
+            "test:integration:valgrind",
+          )
+        end
+      end
+
+      task all: :compile do
+        results = configurations.map do |_name, engine, mode|
+          system(
+            { "LIQUID_ENGINE" => engine, "LIQUID_PARSER_MODE" => mode, "LIQUID_C_DISABLE_VM" => nil },
+            RbConfig.ruby,
+            "-S",
+            "rake",
+            "test:integration:valgrind",
+          )
+        end
+        abort("Valgrind integration failures") unless results.all?
+      end
     end
   end
 end
