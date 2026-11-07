@@ -7,9 +7,19 @@ on:
   issue_comment:
     types: [created]
 
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   cla:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      pull-requests: write
     if: |
       (github.event.issue.pull_request
         && !github.event.issue.pull_request.merged_at
@@ -17,7 +27,7 @@ jobs:
       )
       || (github.event.pull_request && !github.event.pull_request.merged)
     steps:
-      - uses: Shopify/shopify-cla-action@v1
+      - uses: Shopify/shopify-cla-action@1af529ae29b29b6083963ff22425ea64749261bc # v1.9.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cla-token: ${{ secrets.CLA_TOKEN }}

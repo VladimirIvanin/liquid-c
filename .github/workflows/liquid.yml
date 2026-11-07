@@ -1,14 +1,27 @@
 name: Liquid
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       matrix:
         include:
-          - { ruby: '3.0', allowed-failure: false }
-          - { ruby: '3.1', allowed-failure: false }
           - { ruby: '3.2', allowed-failure: false }
           - { ruby: '3.3', allowed-failure: false }
           - { ruby: '3.4', allowed-failure: false }
@@ -16,8 +29,10 @@ jobs:
           - { ruby: truffleruby-head, allowed-failure: true }
     name: test (${{ matrix.ruby }})
     steps:
-      - uses: actions/checkout@v2
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
@@ -38,18 +53,39 @@ jobs:
       - run: bundle exec rubocop
         if: matrix.ruby != 'truffleruby-head'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: compatibility-${{ matrix.ruby }}
           path: tmp/compatibility
 
-  valgrind:
+  check:
+    name: Full check
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v2
-      - uses: ruby/setup-ruby@v1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
+        with:
+          ruby-version: .ruby-version
           bundler-cache: true
-      - run: sudo apt-get install -y valgrind
-      - run: bundle exec rake test:valgrind
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          version: '2026.11.4'
+          install_args: hk jactionlint betterleaks osv-scanner
+          add_shims_to_path: false
+      - name: Use the Ruby installed by setup-ruby
+        run: mise link ruby@3.3.0 "$(ruby -rrbconfig -e 'print RbConfig::CONFIG.fetch("prefix")')"
+      - name: Install compiler and Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y build-essential valgrind
+      - run: mise run check
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: compatibility-check
+          path: tmp/compatibility

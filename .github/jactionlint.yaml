@@ -1,0 +1,8 @@
+profile: default
+ignores:
+  - rule: dangerous-triggers
+    file: .github/workflows/cla.yml
+    reason: >-
+      CLA checks need the base repository's secret and permissions to rerun
+      failed checks after a signed comment. This workflow only runs the pinned
+      Shopify CLA action; it never checks out or executes pull request code.

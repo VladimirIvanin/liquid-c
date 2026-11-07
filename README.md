@@ -68,9 +68,21 @@ Calculating -------------------------------------
 
 ## Developing
 
-    bundle install
-    # run tests
-    bundle exec rake
+Install [mise 2026.11.4](https://mise.jdx.dev/getting-started.html), Ruby build
+prerequisites, a C compiler, make and Valgrind (Linux).
+
+```sh
+mise trust
+mise install
+mise run setup
+mise run check
+```
+
+Tool versions are pinned in `mise.toml`; Ruby stays at 3.3.0. The development
+bundle requires Ruby 3.2+ for the patched Nokogiri. RuboCop rules are unchanged.
+Pre-commit checks Ruby, workflows and staged secrets; pre-push runs the full
+check. CI also runs it on pull requests, pushes to `main` and weekly, including
+secret history and OSV scans. Dependabot updates gems and Actions weekly.
 
 ## Contributing
 
