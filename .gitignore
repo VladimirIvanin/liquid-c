@@ -10,3 +10,4 @@ instruments*.trace
 *.cpu
 *.object
 *.dSYM
+/docs/
