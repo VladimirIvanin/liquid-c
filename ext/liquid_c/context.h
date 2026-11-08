@@ -12,10 +12,7 @@ typedef struct context {
     VALUE filter_methods;
     VALUE interrupts;
     VALUE resource_limits_obj;
-    resource_limits_t *resource_limits;
     VALUE global_filter;
-    bool strict_variables;
-    bool strict_filters;
 } context_t;
 
 void liquid_define_context(void);
@@ -24,6 +21,7 @@ void context_refresh(context_t *context);
 void context_mark(context_t *context);
 VALUE context_find_variable(context_t *context, VALUE key, VALUE raise_on_not_found);
 void context_maybe_raise_undefined_variable(VALUE self, VALUE key);
+__attribute__((noreturn)) void context_raise_undefined_variable(VALUE key);
 
 extern ID id_aset, id_set_context;
 
@@ -34,26 +32,19 @@ extern ID id_aset, id_set_context;
 
 inline static VALUE value_to_liquid_and_set_context(VALUE value, VALUE context_to_set)
 {
-    // Scalar type stored directly in the VALUE, these all have a #to_liquid
-    // that returns self, and should have no #context= method
-    if (RB_SPECIAL_CONST_P(value))
-        return value;
-
-    VALUE klass = RBASIC_CLASS(value);
-
-    // More basic types having #to_liquid of self and no #context=
-    if (klass == rb_cString || klass == rb_cArray || klass == rb_cHash)
-        return value;
-
-    // set value's context before invoking #to_liquid
     if (rb_respond_to(value, id_set_context))
         rb_funcall(value, id_set_context, 1, context_to_set);
-
     VALUE liquid_value = rb_funcall(value, id_to_liquid, 0);
-
-    if (liquid_value != value && rb_respond_to(liquid_value, id_set_context))
+    if (RTEST(rb_funcall(value, rb_intern("!="), 1, liquid_value)) && rb_respond_to(liquid_value, id_set_context))
         rb_funcall(liquid_value, id_set_context, 1, context_to_set);
+    return liquid_value;
+}
 
+inline static VALUE nested_value_to_liquid_and_set_context(VALUE value, VALUE context_to_set)
+{
+    VALUE liquid_value = rb_funcall(value, id_to_liquid, 0);
+    if (rb_respond_to(liquid_value, id_set_context))
+        rb_funcall(liquid_value, id_set_context, 1, context_to_set);
     return liquid_value;
 }
 

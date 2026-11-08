@@ -31,6 +31,8 @@ enum opcode {
     OP_WRITE_RAW,
     OP_JUMP_FWD_W,
     OP_JUMP_FWD,
+    OP_LOOKUP_GUARD,
+    OP_EVALUATE,
 };
 
 typedef struct {
@@ -61,8 +63,10 @@ void vm_assembler_reset(vm_assembler_t *code);
 void vm_assembler_free(vm_assembler_t *code);
 void vm_assembler_gc_mark(vm_assembler_t *code);
 VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, const VALUE *constants, size_t constants_offset);
-void vm_assembler_concat(vm_assembler_t *dest, vm_assembler_t *src);
+void vm_assembler_concat(vm_assembler_t *dest, const vm_assembler_t *src);
 void vm_assembler_require_stack_args(vm_assembler_t *code, unsigned int count);
+size_t vm_assembler_add_lookup_guard(vm_assembler_t *code);
+void vm_assembler_patch_lookup_guard(vm_assembler_t *code, size_t offset);
 
 void vm_assembler_add_write_raw(vm_assembler_t *code, const char *string, size_t size);
 void vm_assembler_add_write_node(vm_assembler_t *code, VALUE node);

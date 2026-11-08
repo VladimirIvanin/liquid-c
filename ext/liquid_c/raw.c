@@ -106,6 +106,7 @@ static VALUE raw_parse_method(VALUE self, VALUE tokens)
         if (match_full_token_possibly_invalid(&token, &match)
                 && match.delimiter_len == block_delimiter_len
                 && memcmp(match.delimiter_start, block_delimiter_str, block_delimiter_len) == 0) {
+            tokenizer->lstrip_flag = token.len_full >= 3 && token.str_full[token.len_full - 3] == '-';
             body_len += match.body_len;
             VALUE body_str = rb_enc_str_new(body, body_len, utf8_encoding);
             rb_ivar_set(self, id_ivar_body, body_str);

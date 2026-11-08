@@ -141,6 +141,10 @@ VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, c
                 rb_str_catf(output, "lookup_key\n");
                 break;
 
+            case OP_LOOKUP_GUARD:
+                rb_str_catf(output, "lookup_guard(%u)\n", bytes_to_uint32(ip + 1));
+                break;
+
             case OP_NEW_INT_RANGE:
                 rb_str_catf(output, "new_int_range\n");
                 break;
@@ -193,6 +197,10 @@ VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, c
 
             case OP_PUSH_CONST:
                 rb_str_catf(output, "push_const(%+"PRIsVALUE")\n", constant);
+                break;
+
+            case OP_EVALUATE:
+                rb_str_catf(output, "evaluate(%+"PRIsVALUE")\n", constant);
                 break;
 
             case OP_FIND_STATIC_VAR:
@@ -275,7 +283,7 @@ void update_instructions_constants_table_index_ref(c_buffer_t *instructions, siz
     }
 }
 
-void vm_assembler_concat(vm_assembler_t *dest, vm_assembler_t *src)
+void vm_assembler_concat(vm_assembler_t *dest, const vm_assembler_t *src)
 {
     size_t dest_element_count = c_buffer_size(&dest->constants) / sizeof(VALUE);
 
@@ -288,14 +296,37 @@ void vm_assembler_concat(vm_assembler_t *dest, vm_assembler_t *src)
     // merge constants array
     c_buffer_concat(&dest->constants, &src->constants);
 
-    update_instructions_constants_table_index_ref(&src->instructions, dest_element_count, &dest->constants);
+    size_t offset = c_buffer_size(&dest->instructions);
     c_buffer_concat(&dest->instructions, &src->instructions);
+    c_buffer_t appended = dest->instructions;
+    appended.data += offset;
+    update_instructions_constants_table_index_ref(&appended, dest_element_count, &dest->constants);
 
     size_t max_src_stack_size = dest->stack_size + src->max_stack_size;
     if (max_src_stack_size > dest->max_stack_size)
         dest->max_stack_size = max_src_stack_size;
 
     dest->stack_size += src->stack_size;
+}
+
+size_t vm_assembler_add_lookup_guard(vm_assembler_t *code)
+{
+    size_t offset = c_buffer_size(&code->instructions);
+    uint8_t *ip = c_buffer_extend_for_write(&code->instructions, 5);
+    ip[0] = OP_LOOKUP_GUARD;
+    uint32_to_bytes(0, ip + 1);
+    return offset;
+}
+
+void vm_assembler_patch_lookup_guard(vm_assembler_t *code, size_t offset)
+{
+    size_t size = c_buffer_size(&code->instructions);
+    if (offset > size || size - offset < 5 || code->instructions.data[offset] != OP_LOOKUP_GUARD)
+        rb_raise(rb_eArgError, "Invalid lookup guard offset");
+    size_t distance = size - offset - 5;
+    if (distance > UINT32_MAX)
+        rb_raise(rb_eRangeError, "Lookup chain too large");
+    uint32_to_bytes((uint32_t)distance, code->instructions.data + offset + 1);
 }
 
 void vm_assembler_require_stack_args(vm_assembler_t *code, unsigned int count)
@@ -419,7 +450,12 @@ void vm_assembler_add_evaluate_expression_from_ruby(vm_assembler_t *code, VALUE 
             break;
     }
 
-    vm_assembler_add_push_const(code, expression);
+    if (rb_respond_to(expression, id_evaluate)) {
+        vm_assembler_increment_stack_size(code, 1);
+        vm_assembler_add_op_with_constant(code, expression, OP_EVALUATE);
+    } else {
+        vm_assembler_add_push_const(code, expression);
+    }
 }
 
 void vm_assembler_add_find_variable_from_ruby(vm_assembler_t *code, VALUE code_obj, VALUE expression)
@@ -474,6 +510,7 @@ void vm_assembler_add_hash_new_from_ruby(vm_assembler_t *code, VALUE hash_size_o
 
 void vm_assembler_add_filter_from_ruby(vm_assembler_t *code, VALUE filter_name, VALUE arg_count_obj)
 {
+    StringValue(filter_name);
     ensure_parsing(code);
     unsigned int arg_count = NUM2USHORT(arg_count_obj);
     vm_assembler_require_stack_args(code, arg_count + 1);
@@ -485,6 +522,7 @@ void vm_assembler_add_filter_from_ruby(vm_assembler_t *code, VALUE filter_name, 
 bool vm_assembler_opcode_has_constant(uint8_t ip) {
     if (
         ip == OP_PUSH_CONST ||
+        ip == OP_EVALUATE ||
         ip == OP_WRITE_NODE ||
         ip == OP_FIND_STATIC_VAR ||
         ip == OP_LOOKUP_CONST_KEY ||

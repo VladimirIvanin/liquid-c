@@ -68,7 +68,7 @@ static inline void c_buffer_rb_gc_mark(c_buffer_t *buffer)
     }
 }
 
-static inline void c_buffer_concat(c_buffer_t *dest, c_buffer_t *src)
+static inline void c_buffer_concat(c_buffer_t *dest, const c_buffer_t *src)
 {
     c_buffer_write(dest, src->data, c_buffer_size(src));
 }

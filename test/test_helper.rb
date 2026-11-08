@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require "minitest/mock"
+$LOAD_PATH.unshift(ENV["LIQUID_C_EXTENSION_DIR"]) if ENV["LIQUID_C_EXTENSION_DIR"]
 require "liquid/c"
 
 if GC.respond_to?(:verify_compaction_references)

@@ -6,9 +6,11 @@ require "minitest/mock"
 require "bigdecimal"
 require_relative "fixtures"
 require_relative "context_audit_cases"
+require_relative "review_cases"
 
 class Liquid514RegressionTest < Minitest::Test
   include CompatibilityContextAuditCases
+  include CompatibilityReviewCases
   TEMPLATE_CASES = {
     string_first: ["{{ x.first }}", { "x" => "éЖ" }, "é"],
     string_last: ["{{ x.last }}", { "x" => "éЖ" }, "Ж"],

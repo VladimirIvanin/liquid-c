@@ -3,6 +3,15 @@
 require "test_helper"
 
 class ResourceLimitsTest < Minitest::Test
+  def test_marshal_keeps_legacy_inactive_capture_marker
+    limits = Liquid::ResourceLimits.new({})
+    state = limits.marshal_dump
+    assert_equal(-1, state.fetch(10))
+    copy = Liquid::C::ResourceLimits.allocate
+    copy.marshal_load(state)
+    assert_equal(state, copy.marshal_dump)
+  end
+
   def test_copy_preserves_state_and_is_independent
     original = Liquid::ResourceLimits.new(render_score_limit: 2**100, assign_score_limit: 5)
     original.increment_render_score(3)
@@ -44,8 +53,8 @@ class ResourceLimitsTest < Minitest::Test
     assert_equal(original, limits.marshal_dump)
     state = original.dup
     state[10] = 2**100
-    assert_raises(RangeError) { limits.marshal_load(state) }
-    assert_equal(original, limits.marshal_dump)
+    limits.marshal_load(state)
+    assert_equal(state, limits.marshal_dump)
   end
 
   def test_marshal_load_preserves_frozen_state

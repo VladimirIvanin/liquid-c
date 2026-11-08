@@ -117,6 +117,9 @@ static void tokenizer_next_for_template(tokenizer_t *tokenizer, token_t *token)
 {
     const char *cursor = tokenizer->cursor;
     const char *last = tokenizer->cursor_end - 1;
+    const char *next_cursor = NULL;
+    bool nested_tag = false;
+    const char *tag_search_start = NULL;
 
     token->str_full = cursor;
     token->type = TOKEN_RAW;
@@ -144,6 +147,8 @@ static void tokenizer_next_for_template(tokenizer_t *tokenizer, token_t *token)
         token->lstrip = token->rstrip;
         token->rstrip = 0;
         if (c == '%') {
+scan_tag:
+            tag_search_start = cursor;
             while (cursor < last) {
                 if (*cursor++ != '%')
                     continue;
@@ -152,18 +157,24 @@ static void tokenizer_next_for_template(tokenizer_t *tokenizer, token_t *token)
                     c = *cursor++;
                 if (c != '}')
                     continue;
-                token->type = TOKEN_TAG;
+                token->type = nested_tag ? TOKEN_INVALID : TOKEN_TAG;
                 if(cursor[-3] == '-')
                     token->rstrip = tokenizer->lstrip_flag = true;
                 goto found;
             }
             // unterminated tag
-            cursor = tokenizer->cursor + 2;
+            cursor = nested_tag ? tag_search_start : tokenizer->cursor + 2;
             tokenizer->lstrip_flag = false;
             goto found;
         } else {
             while (cursor < last) {
-                if (*cursor++ != '}')
+                char current = *cursor++;
+                if (current == '{' && *cursor == '%') {
+                    cursor++;
+                    nested_tag = true;
+                    goto scan_tag;
+                }
+                if (current != '}')
                     continue;
                 if (*cursor++ != '}') {
                     // variable incomplete end, used to end raw tags
@@ -179,7 +190,8 @@ static void tokenizer_next_for_template(tokenizer_t *tokenizer, token_t *token)
                 cursor++;
                 goto found;
             }
-            // unterminated variable
+            // Ruby consumes the searched suffix even when it returns only "{{".
+            next_cursor = tokenizer->cursor_end;
             cursor = tokenizer->cursor + 2;
             tokenizer->lstrip_flag = false;
             goto found;
@@ -203,7 +215,7 @@ found:
 
     assert(token->len_trimmed >= 0);
 
-    tokenizer->cursor += token->len_full;
+    tokenizer->cursor = next_cursor ? next_cursor : cursor;
 
     if (tokenizer->line_number) {
         tokenizer->line_number += count_newlines(token->str_full, token->str_full + token->len_full);

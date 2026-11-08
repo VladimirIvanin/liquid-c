@@ -11,3 +11,5 @@ instruments*.trace
 *.object
 *.dSYM
 /docs/
+/.audit.Gemfile
+/.audit.Gemfile.lock

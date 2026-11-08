@@ -7,6 +7,7 @@ static void resource_limits_mark(void *ptr)
 {
     resource_limits_t *limits = ptr;
     rb_gc_mark(limits->self);
+    rb_gc_mark(limits->last_capture_length);
     rb_gc_mark(limits->render_length_limit);
     rb_gc_mark(limits->render_score_limit);
     rb_gc_mark(limits->assign_score_limit);
@@ -68,7 +69,7 @@ static void resource_limits_reset(resource_limits_t *limits)
 {
     rb_check_frozen(limits->self);
     limits->reached_limit = false;
-    limits->last_capture_length = -1;
+    limits->last_capture_length = Qnil;
     limits->render_score = INT2FIX(0);
     limits->assign_score = INT2FIX(0);
     if (score_exceeds_limit(limits->cumulative_render_score, limits->cumulative_render_score_limit) ||
@@ -288,20 +289,27 @@ void resource_limits_increment_render_score(resource_limits_t *limits, long amou
 
 void resource_limits_increment_write_score(resource_limits_t *limits, VALUE output)
 {
-    long captured = RSTRING_LEN(output);
-    if (limits->last_capture_length >= 0) {
-        long increment = captured - limits->last_capture_length;
+    VALUE last_capture = limits->last_capture_length;
+    if (NIL_P(last_capture) && !RTEST(limits->render_length_limit))
+        return;
+    VALUE captured;
+    if (RB_TYPE_P(output, T_STRING) && rb_method_basic_definition_p(CLASS_OF(output), rb_intern("bytesize"))) {
+        captured = LONG2NUM(RSTRING_LEN(output));
+    } else {
+        captured = rb_funcall(output, rb_intern("bytesize"), 0);
+    }
+    if (!NIL_P(last_capture)) {
+        VALUE increment = rb_funcall(captured, rb_intern("-"), 1, last_capture);
         rb_check_frozen(limits->self);
         limits->last_capture_length = captured;
-        increment_assign_score(limits, LONG2NUM(increment));
-    } else if (score_exceeds_limit(LONG2NUM(captured), limits->render_length_limit)) {
+        increment_assign_score(limits, increment);
+    } else if (score_exceeds_limit(captured, limits->render_length_limit)) {
         resource_limits_raise_limits_reached(limits);
     }
 }
 
 static VALUE resource_limits_increment_write_score_method(VALUE self, VALUE output)
 {
-    Check_Type(output, T_STRING);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     resource_limits_increment_write_score(limits, output);
@@ -325,7 +333,7 @@ static VALUE resource_limits_reached_method(VALUE self)
 
 struct capture_ensure_t {
     resource_limits_t *limits;
-    long old_capture_length;
+    VALUE old_capture_length;
 };
 
 static VALUE capture_ensure(VALUE data)
@@ -342,7 +350,7 @@ static VALUE resource_limits_with_capture_method(VALUE self)
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     struct capture_ensure_t args = { limits, limits->last_capture_length };
-    limits->last_capture_length = 0;
+    limits->last_capture_length = INT2FIX(0);
     return rb_ensure(rb_yield, Qundef, capture_ensure, (VALUE)&args);
 }
 
@@ -369,7 +377,7 @@ static VALUE resource_limits_marshal_dump(VALUE self)
     rb_ary_push(state, limits->cumulative_render_score);
     rb_ary_push(state, limits->cumulative_assign_score);
     rb_ary_push(state, limits->reached_limit ? Qtrue : Qfalse);
-    rb_ary_push(state, LONG2NUM(limits->last_capture_length));
+    rb_ary_push(state, NIL_P(limits->last_capture_length) ? INT2FIX(-1) : limits->last_capture_length);
     return state;
 }
 
@@ -397,10 +405,10 @@ static VALUE resource_limits_marshal_load(VALUE self, VALUE state)
         rb_raise(rb_eTypeError, "Resource limits reached state must be boolean");
     }
     VALUE capture = RARRAY_AREF(state, 10);
-    if (!RB_INTEGER_TYPE_P(capture)) {
+    if (!NIL_P(capture) && !RB_INTEGER_TYPE_P(capture)) {
         rb_raise(rb_eTypeError, "Resource limits capture length must be an Integer");
     }
-    long capture_length = NUM2LONG(capture);
+    VALUE capture_length = capture == INT2FIX(-1) ? Qnil : capture;
 
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);

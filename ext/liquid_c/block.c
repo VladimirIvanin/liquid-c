@@ -453,7 +453,9 @@ static VALUE block_body_disassemble(VALUE self)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
+    ensure_body_compiled(body);
     document_body_entry_t *entry = &body->as.compiled.document_body_entry;
+    document_body_ensure_compile_finished(entry->body);
     block_body_header_t *header = document_body_get_block_body_header_ptr(entry);
     const uint8_t *start_ip = block_body_instructions_ptr(header);
     return vm_assembler_disassemble(
@@ -479,6 +481,24 @@ static VALUE block_body_add_find_variable(VALUE self, VALUE expression)
     BlockBody_Get_Struct(self, body);
     ensure_intermediate(body);
     vm_assembler_add_find_variable_from_ruby(body->as.intermediate.code, self, expression);
+    return self;
+}
+
+static VALUE block_body_add_lookup_guard(VALUE self)
+{
+    block_body_t *body;
+    BlockBody_Get_Struct(self, body);
+    ensure_intermediate(body);
+    return SIZET2NUM(vm_assembler_add_lookup_guard(body->as.intermediate.code));
+}
+
+static VALUE block_body_patch_lookup_guard(VALUE self, VALUE offset)
+{
+    size_t guard_offset = NUM2SIZET(offset);
+    block_body_t *body;
+    BlockBody_Get_Struct(self, body);
+    ensure_intermediate(body);
+    vm_assembler_patch_lookup_guard(body->as.intermediate.code, guard_offset);
     return self;
 }
 
@@ -549,6 +569,8 @@ void liquid_define_block_body(void)
 
     rb_define_method(cLiquidCBlockBody, "add_evaluate_expression", block_body_add_evaluate_expression, 1);
     rb_define_method(cLiquidCBlockBody, "add_find_variable", block_body_add_find_variable, 1);
+    rb_define_method(cLiquidCBlockBody, "add_lookup_guard", block_body_add_lookup_guard, 0);
+    rb_define_method(cLiquidCBlockBody, "patch_lookup_guard", block_body_patch_lookup_guard, 1);
     rb_define_method(cLiquidCBlockBody, "add_lookup_command", block_body_add_lookup_command, 1);
     rb_define_method(cLiquidCBlockBody, "add_lookup_key", block_body_add_lookup_key, 1);
     rb_define_method(cLiquidCBlockBody, "add_new_int_range", block_body_add_new_int_range, 0);

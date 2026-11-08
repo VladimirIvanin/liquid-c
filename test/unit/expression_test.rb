@@ -144,9 +144,10 @@ class ExpressionTest < Minitest::Test
     assert_equal(<<~ASM, expression.disassemble)
       0x0000: find_static_var("foo")
       0x0005: lookup_const_key("bar")
-      0x000a: push_int8(123)
-      0x000c: lookup_key
-      0x000d: leave
+      0x000a: lookup_guard(3)
+      0x000f: push_int8(123)
+      0x0011: lookup_key
+      0x0012: leave
     ASM
   end
 

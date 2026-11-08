@@ -3,13 +3,13 @@
 
 > ⚠️ **Warning: This project is no longer maintained. Use at your own risk and consider looking for alternatives or forks that are currently maintained.**
 
-Partial native implementation of the liquid ruby gem in C.
+Partial native implementation of Liquid 5.14.x in C. Compatibility tests use Liquid 5.14.0.
 
 ## Installation
 
 Add these lines to your application's Gemfile:
 
-    gem 'liquid', github: 'Shopify/liquid', branch: 'main'
+    gem 'liquid', '~> 5.14.0'
     gem 'liquid-c', github: 'Shopify/liquid-c', branch: 'main'
 
 And then execute:

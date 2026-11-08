@@ -24,29 +24,9 @@ void internal_variable_compile(variable_parse_args_t *parse_args, unsigned int l
     vm_assembler_add_pop_write(code);
 }
 
-typedef struct {
-    expression_t *expression;
-    VALUE context;
-} variable_expression_evaluate_args_t;
-
-static VALUE try_variable_expression_evaluate(VALUE uncast_args)
-{
-    variable_expression_evaluate_args_t *args = (void *)uncast_args;
-    return liquid_vm_evaluate(args->context, &args->expression->code);
-}
-
-static VALUE rescue_variable_expression_evaluate(VALUE uncast_args, VALUE exception)
-{
-    variable_expression_evaluate_args_t *args = (void *)uncast_args;
-    vm_t *vm = vm_from_context(args->context);
-    exception = vm_translate_if_filter_argument_error(vm, exception);
-    rb_exc_raise(exception);
-}
-
 VALUE internal_variable_expression_evaluate(expression_t *expression, VALUE context)
 {
-    variable_expression_evaluate_args_t args = { expression, context };
-    return rb_rescue(try_variable_expression_evaluate, (VALUE)&args, rescue_variable_expression_evaluate, (VALUE)&args);
+    return liquid_vm_evaluate(context, &expression->code);
 }
 
 static VALUE variable_expression_evaluate_method(VALUE self, VALUE context)

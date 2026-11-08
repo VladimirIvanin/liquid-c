@@ -13,7 +13,7 @@ typedef struct resource_limits {
     VALUE cumulative_render_score;
     VALUE cumulative_assign_score;
     bool reached_limit;
-    long last_capture_length;
+    VALUE last_capture_length;
 } resource_limits_t;
 
 extern VALUE cLiquidResourceLimits;

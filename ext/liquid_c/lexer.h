@@ -33,7 +33,7 @@ typedef struct lexer_token {
 
 extern const char *symbol_names[TOKEN_END];
 
-const char *lex_one(const char *str, const char *end, lexer_token_t *token);
+const char *lex_one(const char *str, const char *end, lexer_token_t *token, unsigned char previous_type);
 
 inline static VALUE token_to_rstr(lexer_token_t token) {
     return rb_enc_str_new(token.val, token.val_end - token.val, utf8_encoding);

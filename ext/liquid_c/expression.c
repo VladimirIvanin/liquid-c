@@ -66,6 +66,7 @@ static VALUE expression_strict_parse(VALUE klass, VALUE markup)
         return Qnil;
 
     StringValue(markup);
+    markup = rb_str_dup_frozen(markup);
     char *start = RSTRING_PTR(markup);
 
     parser_t p;
@@ -75,6 +76,7 @@ static VALUE expression_strict_parse(VALUE klass, VALUE markup)
     if (p.cur.type != TOKEN_EOS)
         rb_enc_raise(utf8_encoding, cLiquidSyntaxError, "[:%s] is not a valid expression", symbol_names[p.cur.type]);
 
+    RB_GC_GUARD(markup);
     return expr_obj;
 }
 

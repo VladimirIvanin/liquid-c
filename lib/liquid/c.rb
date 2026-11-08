@@ -68,9 +68,9 @@ Liquid::ParseContext.class_eval do
   def new_tokenizer(source, start_line_number: nil, for_liquid_tag: false)
     unless liquid_c_nodes_disabled?
       source = source.to_s.to_str
-      if source.bytesize <= Liquid::C::Tokenizer::MAX_SOURCE_BYTE_SIZE
-        source = source.encode(Encoding::UTF_8)
-        return Liquid::C::Tokenizer.new(source, start_line_number || 0, for_liquid_tag)
+      encoded_source = source.encode(Encoding::UTF_8)
+      if encoded_source.bytesize <= Liquid::C::Tokenizer::MAX_SOURCE_BYTE_SIZE
+        return Liquid::C::Tokenizer.new(encoded_source, start_line_number || 0, for_liquid_tag)
       else
         @liquid_c_nodes_disabled = true
       end
@@ -167,7 +167,9 @@ end
 
 Liquid::StrainerTemplate.class_eval do
   class << self
-    alias_method :ruby_add_filter, :add_filter
+    original = instance_method(:add_filter)
+    original = original.super_method while original.owner != self
+    define_method(:ruby_add_filter, original)
 
     def add_filter(filter)
       result = ruby_add_filter(filter)
@@ -210,13 +212,25 @@ Liquid::C::Expression.class_eval do
 end
 
 Liquid::Context.class_eval do
-  alias_method :ruby_parse_evaluate, :[]
-  alias_method :ruby_evaluate, :evaluate
-  alias_method :ruby_find_variable, :find_variable
-  alias_method :ruby_strict_variables=, :strict_variables=
-  alias_method :ruby_strict_filters=, :strict_filters=
-  alias_method :ruby_global_filter=, :global_filter=
-  alias_method :ruby_add_filters, :add_filters
+  native_methods = {
+    :[] => :c_parse_evaluate,
+    evaluate: :c_evaluate,
+    find_variable: :c_find_variable_kwarg,
+    :strict_variables= => :c_strict_variables=,
+    :strict_filters= => :c_strict_filters=,
+    :global_filter= => :c_global_filter=,
+    add_filters: :c_add_filters,
+  }
+  source = File.join(Gem.loaded_specs.fetch("liquid").full_gem_path, "lib/liquid/context.rb")
+  Liquid::C::CONTEXT_METHODS = native_methods.filter_map do |name, native_name|
+    original = instance_method(name)
+    original = original.super_method while original && original.owner != self
+    ruby_name = name == :[] ? :ruby_parse_evaluate : :"ruby_#{name}"
+    define_method(ruby_name, original)
+    next unless original.source_location&.first == source
+
+    [name, original, native_name]
+  end.freeze
 
   # This isn't entered often by Ruby (most calls stay in C via VariableLookup#evaluate)
   # so the wrapper method isn't costly.
@@ -228,6 +242,21 @@ Liquid::Context.class_eval do
     ruby_parse_evaluate(expression)
   end
 end
+
+module Liquid
+  module C
+    module ContextCopyPatch
+      private
+
+      def initialize_copy(other)
+        result = super
+        Liquid::C::VM.reset_context(self)
+        result
+      end
+    end
+  end
+end
+Liquid::Context.prepend(Liquid::C::ContextCopyPatch)
 
 Liquid::ResourceLimits.class_eval do
   class << self
@@ -266,22 +295,17 @@ module Liquid
             Liquid::Variable.alias_method(name, replacement)
           end
         end
-        if value
-          Liquid::Context.send(:alias_method, :[], :c_parse_evaluate)
-          Liquid::Context.send(:alias_method, :evaluate, :c_evaluate)
-          Liquid::Context.send(:alias_method, :find_variable, :c_find_variable_kwarg)
-          Liquid::Context.send(:alias_method, :strict_variables=, :c_strict_variables=)
-          Liquid::Context.send(:alias_method, :strict_filters=, :c_strict_filters=)
-          Liquid::Context.send(:alias_method, :global_filter=, :c_global_filter=)
-          Liquid::Context.send(:alias_method, :add_filters, :c_add_filters)
-        else
-          Liquid::Context.send(:alias_method, :[], :ruby_parse_evaluate)
-          Liquid::Context.send(:alias_method, :evaluate, :ruby_evaluate)
-          Liquid::Context.send(:alias_method, :find_variable, :ruby_find_variable)
-          Liquid::Context.send(:alias_method, :strict_variables=, :ruby_strict_variables=)
-          Liquid::Context.send(:alias_method, :strict_filters=, :ruby_strict_filters=)
-          Liquid::Context.send(:alias_method, :global_filter=, :ruby_global_filter=)
-          Liquid::Context.send(:alias_method, :add_filters, :ruby_add_filters)
+        Liquid::C::CONTEXT_METHODS.each do |name, ruby_method, native_name|
+          next if Liquid::Context.frozen?
+
+          current = Liquid::Context.instance_method(name)
+          current = current.super_method while current && current.owner != Liquid::Context
+          native_method = Liquid::Context.instance_method(native_name)
+          expected = value ? ruby_method : native_method
+          next unless current == expected
+
+          replacement = value ? native_method : ruby_method
+          Liquid::Context.define_method(name, replacement)
         end
       end
     end

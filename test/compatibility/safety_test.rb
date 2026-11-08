@@ -484,6 +484,140 @@ class Liquid514SafetyTest < Minitest::Test
     assert_equal("AokZ:1", stdout)
   end
 
+  def test_review_hash_callback_cannot_release_undefined_value
+    context = Liquid::Context.new("present" => 1)
+    context.strict_variables = true
+    key = Object.new
+    key.define_singleton_method(:hash) do
+      context.strict_variables = false
+      1
+    end
+    key.define_singleton_method(:eql?) { |_other| false }
+    assert_raises(Liquid::UndefinedVariable) { context.find_variable(key) }
+    assert_equal(1, context["present"])
+  end
+
+  def test_review_aborted_render_releases_stack_values
+    require "weakref"
+    context = Liquid::Context.new("b" => ->(*) { throw(:review_abort) })
+    template = Liquid::Template.parse("{{ a | plus: b }}")
+    references = Array.new(20) do
+      context["a"] = "x" * 100_000
+      reference = WeakRef.new(context["a"])
+      catch(:review_abort) { template.render!(context) }
+      reference
+    end
+    context["a"] = nil
+    GC.start
+    assert_equal(0, references.count(&:weakref_alive?))
+  end
+
+  def test_review_filter_unwinds_nonstandard_exceptions_and_throw
+    [SystemStackError, NoMemoryError, nil].each do |error_class|
+      filter = Module.new do
+        define_method(:review_abort) do |_value|
+          raise error_class, "review failure" if error_class
+
+          throw :review_abort
+        end
+      end
+      context = Liquid::Context.new("value" => "ok")
+      context.add_filters(filter)
+      template = Liquid::Template.parse("{{ value | review_abort }}")
+      if error_class
+        assert_raises(error_class) { template.render!(context) }
+      else
+        catch(:review_abort) { template.render!(context) }
+      end
+      assert_equal(false, context.send(:c_filtering?)) if context.respond_to?(:c_filtering?, true)
+      assert_equal("ok", Liquid::Template.parse("{{ value }}").render!(context))
+    end
+  end
+
+  def test_review_encoding_expansion_uses_ruby_fallback
+    source = ("\xE9" * (1 << 23)).force_encoding(Encoding::ISO_8859_1)
+    template = Liquid::Template.parse(source)
+    assert_equal(source, template.render!)
+    assert_instance_of(Liquid::BlockBody, template.root.body)
+  end
+
+  def test_review_core_to_liquid_override_is_respected
+    [String, Array, Hash].each do |base|
+      code = <<~RUBY
+        class #{base}
+          def to_liquid
+            "patched"
+          end
+        end
+        print Liquid::Template.parse("{{ value }}").render!("value" => #{base}.new)
+      RUBY
+      assert_variable_dispatch_subprocess(code, "patched")
+    end
+  end
+
+  def test_review_context_override_survives_engine_switch
+    code = <<~RUBY
+      class Liquid::Context
+        def find_variable(key, **options)
+          "patched"
+        end
+      end
+      if defined?(Liquid::C.enabled)
+        Liquid::C.enabled = false
+        Liquid::C.enabled = true
+      end
+      print Liquid::Context.new.find_variable("x")
+    RUBY
+    assert_variable_dispatch_subprocess(code, "patched")
+  end
+
+  def test_review_prepend_before_loading_extension_does_not_recurse
+    require "open3"
+    code = <<~RUBY
+      require "bundler/setup"
+      require "liquid"
+      Liquid::Context.prepend(Module.new do
+        def [](key)
+          super
+        end
+        def add_filters(filters)
+          super
+        end
+      end)
+      Liquid::StrainerTemplate.singleton_class.prepend(Module.new do
+        def add_filter(filter)
+          super
+        end
+      end)
+      unless ENV["LIQUID_ENGINE"] == "pure"
+        $LOAD_PATH.unshift(ENV["LIQUID_C_EXTENSION_DIR"]) if ENV["LIQUID_C_EXTENSION_DIR"]
+        require "liquid/c"
+      end
+      context = Liquid::Context.new("x" => "ok")
+      context.add_filters(Module.new)
+      Liquid::StrainerTemplate.add_filter(Module.new)
+      print context["x"]
+    RUBY
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", code)
+    assert_predicate(status, :success?, stderr)
+    assert_equal("ok", stdout)
+  end
+
+  def test_review_context_created_before_enabling_c_preserves_limits
+    skip("requires engine switching") unless defined?(Liquid::C.enabled)
+    enabled = Liquid::C.enabled
+    Liquid::C.enabled = false
+    context = Liquid::Context.new("value" => "ok")
+    limits = context.resource_limits
+    limits.render_length_limit = 1
+    Liquid::C.enabled = true
+    assert_equal("ok", context["value"])
+    assert_same(limits, context.resource_limits)
+    assert_raises(Liquid::MemoryError) { Liquid::Template.parse("{{ value }}").render!(context) }
+  ensure
+    Liquid::C.enabled = enabled unless enabled.nil?
+  end
+
   private
 
   def assert_variable_dispatch_subprocess(code, expected, label = nil)
