@@ -38,7 +38,6 @@ static void ensure_body_compiled(const block_body_t *body)
 static void block_body_mark(void *ptr)
 {
     block_body_t *body = ptr;
-    rb_gc_mark(body->obj);
     if (body->compiled) {
         document_body_entry_mark(&body->as.compiled.document_body_entry);
         rb_gc_mark(body->as.compiled.nodelist);
@@ -86,7 +85,6 @@ static VALUE block_body_allocate(VALUE klass)
     VALUE obj = TypedData_Make_Struct(klass, block_body_t, &block_body_data_type, body);
 
     body->compiled = false;
-    body->obj = obj;
     body->as.intermediate.blank = true;
     body->as.intermediate.render_score = 0;
     body->as.intermediate.vm_assembler_pool = NULL;
@@ -112,12 +110,13 @@ static int is_id(int c)
     return rb_isalnum(c) || c == '_';
 }
 
-static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_t *parse_context)
+static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body, parse_context_t *parse_context)
 {
     tokenizer_t *tokenizer = parse_context->tokenizer;
     token_t token;
     tag_markup_t unknown_tag = { Qnil, Qnil };
     int render_score_increment = 0;
+    VALUE environment = Qundef;
 
     while (true) {
         int token_start_line_number = tokenizer->line_number;
@@ -177,7 +176,7 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
                     .markup = token.str_trimmed,
                     .markup_end = token.str_trimmed + token.len_trimmed,
                     .code = body->as.intermediate.code,
-                    .code_obj = body->obj,
+                    .code_obj = body_obj,
                     .parse_context = parse_context->ruby_obj,
                 };
                 internal_variable_compile(&parse_args, token_start_line_number);
@@ -214,7 +213,7 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
 
                     tokenizer_t saved_tokenizer = *tokenizer;
                     tokenizer_setup_for_liquid_tag(tokenizer, markup_start, end, line_number);
-                    unknown_tag = internal_block_body_parse(body, parse_context);
+                    unknown_tag = internal_block_body_parse(body_obj, body, parse_context);
                     *tokenizer = saved_tokenizer;
                     if (unknown_tag.name != Qnil) {
                         rb_funcall(cLiquidBlockBody, intern_unknown_tag_in_liquid_tag, 2, unknown_tag.name, parse_context->ruby_obj);
@@ -224,7 +223,9 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
                 }
 
                 VALUE tag_name = rb_enc_str_new(name_start, name_end - name_start, utf8_encoding);
-                VALUE environment = rb_funcall(parse_context->ruby_obj, rb_intern("environment"), 0);
+                if (environment == Qundef) {
+                    environment = rb_funcall(parse_context->ruby_obj, rb_intern("environment"), 0);
+                }
                 VALUE tag_class = rb_funcall(environment, rb_intern("tag_for_name"), 1, tag_name);
 
                 const char *markup_start = read_while(name_end, end, rb_isspace);
@@ -260,6 +261,8 @@ static tag_markup_t internal_block_body_parse(block_body_t *body, parse_context_
         }
     }
 loop_break:
+    RB_GC_GUARD(body_obj);
+    RB_GC_GUARD(environment);
     body->as.intermediate.render_score += render_score_increment;
     return unknown_tag;
 }
@@ -296,7 +299,7 @@ static VALUE block_body_parse(VALUE self, VALUE tokenizer_obj, VALUE parse_conte
     }
     vm_assembler_remove_leave(body->as.intermediate.code); // to extend block
 
-    tag_markup_t unknown_tag = internal_block_body_parse(body, &parse_context);
+    tag_markup_t unknown_tag = internal_block_body_parse(self, body, &parse_context);
     vm_assembler_add_leave(body->as.intermediate.code);
 
     return rb_yield_values(2, unknown_tag.name, unknown_tag.markup);
@@ -456,7 +459,8 @@ static VALUE block_body_disassemble(VALUE self)
     return vm_assembler_disassemble(
         start_ip,
         start_ip + header->instructions_bytes,
-        &entry->body->constants
+        &entry->body->constants,
+        header->constants_offset
     );
 }
 

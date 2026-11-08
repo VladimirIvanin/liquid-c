@@ -102,7 +102,8 @@ static VALUE expression_disassemble(VALUE self)
     return vm_assembler_disassemble(
         expression->code.instructions.data,
         expression->code.instructions.data_end,
-        &constants
+        &constants,
+        0
     );
 }
 

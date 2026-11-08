@@ -455,6 +455,30 @@ class Liquid514RegressionTest < Minitest::Test
     end
   end
 
+  def test_string_subclass_output_uses_to_s
+    string_class = Class.new(String) do
+      def to_s
+        "[#{super}]"
+      end
+    end
+    value = string_class.new("value")
+    template = Liquid::Template.parse("{{ value }}|{{ values }}", error_mode: Compatibility::MODE)
+    assert_equal("[value]|[value]", template.render!("value" => value, "values" => [value]))
+  end
+
+  def test_resource_limits_dup_preserves_state
+    limits = Liquid::ResourceLimits.new(render_score_limit: 5, cumulative_assign_score_limit: 9)
+    limits.increment_render_score(3)
+    limits.increment_assign_score(2)
+    copy = limits.dup
+    assert_equal(5, copy.render_score_limit)
+    assert_equal(3, copy.render_score)
+    assert_equal(2, copy.cumulative_assign_score)
+    copy.increment_render_score(1)
+    assert_equal(3, limits.render_score)
+    assert_equal(4, copy.render_score)
+  end
+
   def test_resource_limits_marshal_preserves_state
     limits = Liquid::ResourceLimits.new(
       render_score_limit: 2**100,
@@ -474,6 +498,16 @@ class Liquid514RegressionTest < Minitest::Test
     refute_predicate(restored, :reached?)
     assert_raises(Liquid::MemoryError) { restored.increment_assign_score(7) }
     assert_predicate(Marshal.load(Marshal.dump(restored)), :reached?)
+  end
+
+  def test_resource_limits_marshal_preserves_fractional_scores
+    limits = Liquid::ResourceLimits.new(render_score_limit: 2.5, cumulative_assign_score_limit: 4.5)
+    limits.increment_render_score(0.5)
+    limits.increment_assign_score(1.5)
+    restored = Marshal.load(Marshal.dump(limits))
+    assert_equal(2.5, restored.render_score_limit)
+    assert_equal(0.5, restored.render_score)
+    assert_equal(1.5, restored.cumulative_assign_score)
   end
 
   def test_resource_limits_marshal_preserves_capture

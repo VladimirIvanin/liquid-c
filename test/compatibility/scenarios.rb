@@ -65,6 +65,12 @@ module Compatibility
         sources = {
           quoted_delimiter: '{{ "}}" }}',
           quoted_tag_delimiter: '{% assign x = "%}" %}{{ x }}',
+          negative_float_without_integer: "[{{ -.1 }}][{{ -.1 | plus: 1 }}]",
+          negative_float_without_integer_assign: "{% assign x = -.5 %}[{{ x }}]",
+          negative_float_without_integer_condition: "{% if -.1 < 0 %}lt{% else %}ge{% endif %}",
+          fractional_range_literal: "{% for i in (1.5..3.7) %}{{ i }},{% endfor %}",
+          fractional_range_variables: "{% assign a = 1.5 %}{% assign b = 3.7 %}" \
+            "{% for i in (a..b) %}{{ i }},{% endfor %}",
           trailing_filter_comma: '{{ "x" | append: "y", }}',
           empty_filter_argument: '{{ "x" | upcase: }}',
           filter_kwarg: '{{ "x" | probe: "y", label: "z" }}',

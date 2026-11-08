@@ -338,12 +338,38 @@ static VALUE resource_limits_marshal_dump(VALUE self)
     return state;
 }
 
+static VALUE resource_limits_initialize_copy(VALUE self, VALUE original)
+{
+    rb_check_frozen(self);
+    resource_limits_t *limits, *source;
+    ResourceLimits_Get_Struct(self, limits);
+    ResourceLimits_Get_Struct(original, source);
+    *limits = *source;
+    return self;
+}
+
 static VALUE resource_limits_marshal_load(VALUE self, VALUE state)
 {
     Check_Type(state, T_ARRAY);
     if (RARRAY_LEN(state) != 11) {
         rb_raise(rb_eArgError, "Invalid resource limits state");
     }
+
+    for (long i = 0; i < 9; i++) {
+        VALUE value = RARRAY_AREF(state, i);
+        if (!(i < 5 && NIL_P(value)) && !rb_obj_is_kind_of(value, rb_cNumeric)) {
+            rb_raise(rb_eTypeError, "Resource limits state must contain Numeric scores and Numeric or nil limits");
+        }
+    }
+    VALUE reached = RARRAY_AREF(state, 9);
+    if (reached != Qtrue && reached != Qfalse) {
+        rb_raise(rb_eTypeError, "Resource limits reached state must be boolean");
+    }
+    VALUE capture = RARRAY_AREF(state, 10);
+    if (!RB_INTEGER_TYPE_P(capture)) {
+        rb_raise(rb_eTypeError, "Resource limits capture length must be an Integer");
+    }
+    long capture_length = NUM2LONG(capture);
 
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
@@ -357,7 +383,7 @@ static VALUE resource_limits_marshal_load(VALUE self, VALUE state)
     limits->cumulative_render_score = RARRAY_AREF(state, 7);
     limits->cumulative_assign_score = RARRAY_AREF(state, 8);
     limits->reached_limit = RTEST(RARRAY_AREF(state, 9));
-    limits->last_capture_length = NUM2LONG(RARRAY_AREF(state, 10));
+    limits->last_capture_length = capture_length;
     return Qnil;
 }
 
@@ -388,6 +414,7 @@ void liquid_define_resource_limits(void)
     rb_define_method(cLiquidResourceLimits, "reached?", resource_limits_reached_method, 0);
     rb_define_method(cLiquidResourceLimits, "with_capture", resource_limits_with_capture_method, 0);
     rb_define_method(cLiquidResourceLimits, "reset", resource_limits_reset_method, 0);
+    rb_define_private_method(cLiquidResourceLimits, "initialize_copy", resource_limits_initialize_copy, 1);
     rb_define_method(cLiquidResourceLimits, "marshal_dump", resource_limits_marshal_dump, 0);
     rb_define_method(cLiquidResourceLimits, "marshal_load", resource_limits_marshal_load, 1);
 }

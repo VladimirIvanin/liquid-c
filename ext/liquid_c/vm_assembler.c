@@ -98,7 +98,7 @@ void vm_assembler_gc_mark(vm_assembler_t *code)
     c_buffer_rb_gc_mark(&code->constants);
 }
 
-VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, const VALUE *constants)
+VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, const VALUE *constants, size_t constants_offset)
 {
     const uint8_t *ip = start_ip;
     VALUE output = rb_str_buf_new(32);
@@ -109,7 +109,7 @@ VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, c
 
         if (vm_assembler_opcode_has_constant(*ip)) {
             uint32_t constant_index = bytes_to_uint32(ip + 1);
-            constant = RARRAY_AREF(*constants, constant_index);
+            constant = RARRAY_AREF(*constants, constants_offset + constant_index);
         }
 
         switch (*ip) {

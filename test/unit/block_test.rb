@@ -53,6 +53,30 @@ class BlockTest < Minitest::Test
     assert_equal([], calls)
   end
 
+  def test_disassemble_uses_constants_for_each_block
+    template = Liquid::Template.parse("{% if x %}{{ inner }}{% endif %}{{ outer }}")
+    root = template.root.body
+    conditional = root.nodelist.first
+    disassembly = root.disassemble
+    assert_includes(disassembly, 'find_static_var("outer")')
+    assert_includes(disassembly, "write_node(#{conditional.inspect})")
+    inner = conditional.blocks.first.attachment
+    assert_includes(inner.disassemble, 'find_static_var("inner")')
+  end
+
+  def test_variable_compiler_must_leave_one_value
+    original = Liquid::Variable.instance_method(:compile_evaluate)
+    [0, 2].each do |count|
+      Liquid::Variable.define_method(:compile_evaluate) do |code|
+        count.times { code.add_evaluate_expression(1) }
+      end
+      error = assert_raises(RuntimeError) { Liquid::Template.parse("{{ value }}") }
+      assert_includes(error.message, "exactly 1 new element")
+    end
+  ensure
+    Liquid::Variable.define_method(:compile_evaluate, original)
+  end
+
   def test_disassemble_raw_w
     source = "a" * 2**8
     template = Liquid::Template.parse(source)

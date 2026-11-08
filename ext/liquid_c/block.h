@@ -6,7 +6,6 @@
 
 typedef struct block_body {
     bool compiled;
-    VALUE obj;
 
     union {
         struct {

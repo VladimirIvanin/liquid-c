@@ -151,6 +151,94 @@ class Liquid514SafetyTest < Minitest::Test
     assert_equal(2, context.registers[:late_variable_renders])
   end
 
+  def test_variable_output_hooks_follow_method_changes
+    require "open3"
+    require "rbconfig"
+    [:render_to_output_buffer, :render_obj_to_output].product(
+      [:direct, :prepend, :late_method, :preloaded, :nested_prepend, :included_module],
+    ).each do |method_name, installation|
+      arguments = method_name == :render_to_output_buffer ? "context, output" : "obj, output"
+      code = <<~RUBY
+        require "bundler/setup"
+        require "liquid"
+        hook = Module.new
+        install = -> do
+          hook.module_eval(<<~'HOOK')
+            def #{method_name}(#{arguments})
+              output << "["
+              super
+              output << "]"
+              output
+            end
+          HOOK
+        end
+        install.call if #{installation == :preloaded}
+        Liquid::Variable.prepend(hook) if #{installation == :preloaded}
+        unless ENV["LIQUID_ENGINE"] == "pure"
+          $LOAD_PATH.unshift(ENV["LIQUID_C_EXTENSION_DIR"]) if ENV["LIQUID_C_EXTENSION_DIR"]
+          require "liquid/c"
+          Liquid::C.enabled = ENV["LIQUID_ENGINE"] != "disabled"
+          Liquid::ParseContext.liquid_c_nodes_disabled = ENV["LIQUID_ENGINE"] == "no_vm"
+        end
+        template = Liquid::Template.parse("A{{ value }}Z", error_mode: :strict)
+        case #{installation.inspect}
+        when :direct
+          original = Liquid::Variable.instance_method(#{method_name.inspect})
+          Liquid::Variable.define_method(#{method_name.inspect}) do |value, output|
+            output << "["
+            original.bind_call(self, value, output)
+            output << "]"
+            output
+          end
+        when :prepend
+          install.call
+          Liquid::Variable.prepend(hook)
+        when :late_method
+          Liquid::Variable.prepend(hook)
+          install.call
+        when :nested_prepend
+          parent = Module.new
+          Liquid::Variable.prepend(parent)
+          install.call
+          parent.prepend(hook)
+        when :included_module
+          original = Liquid::Variable.instance_method(#{method_name.inspect})
+          original_module = Module.new
+          original_module.define_method(#{method_name.inspect}) do |value, output|
+            original.bind_call(self, value, output)
+          end
+          hook.include(original_module)
+          Liquid::Variable.send(:remove_method, #{method_name.inspect})
+          Liquid::Variable.include(hook)
+          install.call
+        end
+        2.times { print template.render!("value" => "v") }
+        if #{installation == :late_method}
+          hook.send(:remove_method, #{method_name.inspect})
+          print template.render!("value" => "v")
+        end
+      RUBY
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", code)
+      assert_predicate(status, :success?, "#{method_name}/#{installation}: #{stderr}")
+      expected = "A[v]ZA[v]Z"
+      expected += "AvZ" if installation == :late_method
+      assert_equal(expected, stdout, "#{method_name}/#{installation}")
+    end
+  end
+
+  def test_native_render_avoids_ruby_hook_checks_per_block
+    return unless Compatibility::ENGINE == "c"
+
+    template = Liquid::Template.parse("{% for i in (1..1000) %}{% if i %}{{ i }}{% endif %}{% endfor %}")
+    calls = []
+    trace = TracePoint.new(:call, :c_call) do |event|
+      calls << event.method_id if [:c_native_render?, :instance_method, :render_obj_to_output].include?(event.method_id)
+    end
+    output = trace.enable { template.render! }
+    assert_equal((1..1000).to_a.join, output)
+    assert_empty(calls)
+  end
+
   def test_recursive_array_output_raises_without_crashing
     value = []
     value << value

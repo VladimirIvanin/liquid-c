@@ -119,15 +119,30 @@ module Liquid
 end
 
 Liquid::Variable.class_eval do
-  render_method = instance_method(:render)
-  Liquid::C::VARIABLE_RENDER_METHOD = if render_method.owner == self &&
-      render_method.source_location&.first == instance_method(:render_obj_to_output).source_location&.first
-    render_method
-  end
+  Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES = [:render, :render_to_output_buffer, :render_obj_to_output].freeze
+  Liquid::C::VARIABLE_OUTPUT_METHODS = Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.to_h do |name|
+    output_method = instance_method(name)
+    source = File.join(Gem.loaded_specs.fetch("liquid").full_gem_path, "lib/liquid/variable.rb")
+    original = output_method if output_method.owner == self && output_method.source_location&.first == source
+    [name, original]
+  end.freeze
 
   class << self
     def c_native_render?
-      instance_method(:render) == Liquid::C::VARIABLE_RENDER_METHOD
+      @c_native_render
+    end
+
+    def c_refresh_native_render
+      @c_native_render = Liquid::C::VARIABLE_OUTPUT_METHODS.all? do |name, original|
+        method_defined?(name) && instance_method(name) == original
+      end
+      Liquid::C::VM.native_variable_render = @c_native_render
+      observer = Liquid::C::VariableMethodObserver
+      ancestors.take_while { |ancestor| ancestor != Object }.each do |ancestor|
+        next if ancestor.frozen? || ancestor.singleton_class.ancestors.include?(observer)
+
+        ancestor.singleton_class.prepend(observer)
+      end
     end
 
     def c_parse(markup, parse_context)
@@ -161,38 +176,43 @@ Liquid::Variable.class_eval do
       callbacks = parse_context[:stats_callbacks]
       callbacks[:variable_fallback]&.call if callbacks
     end
+  end
+end
 
-    private
-
-    # helper method for C code
-    def rescue_strict_parse_syntax_error(error, markup, parse_context)
-      error.line_number = parse_context.line_number
-      error.markup_context = "in \"{{#{markup}}}\""
-      case parse_context.error_mode
-      when :strict
-        raise
-      when :warn
-        parse_context.warnings << error
+module Liquid
+  module C
+    module VariableMethodObserver
+      def method_added(name)
+        super
+        Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
       end
-      call_variable_fallback_stats_callback(parse_context)
-      lax_parse(markup, parse_context) # Avoid redundant strict parse
-    end
 
-    def lax_parse(markup, parse_context)
-      old_error_mode = parse_context.error_mode
-      begin
-        set_error_mode(parse_context, :lax)
-        new(markup, parse_context)
+      def method_removed(name)
+        super
+        Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
+      end
+
+      def method_undefined(name)
+        super
+        Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
+      end
+
+      def include(*modules)
+        super
       ensure
-        set_error_mode(parse_context, old_error_mode)
+        Liquid::Variable.c_refresh_native_render
       end
-    end
 
-    def set_error_mode(parse_context, mode)
-      parse_context.instance_variable_set(:@error_mode, mode)
+      def prepend(*modules)
+        super
+      ensure
+        Liquid::Variable.c_refresh_native_render
+      end
     end
   end
 end
+
+Liquid::Variable.c_refresh_native_render
 
 Liquid::StrainerTemplate.class_eval do
   class << self

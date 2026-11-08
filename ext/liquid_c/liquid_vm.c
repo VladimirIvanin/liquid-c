@@ -11,6 +11,8 @@ ID id_render_node;
 ID id_vm;
 
 static VALUE cLiquidCVM;
+static VALUE mLiquidUtils;
+static bool native_variable_render;
 
 static void vm_mark(void *ptr)
 {
@@ -108,8 +110,14 @@ static void write_obj(VALUE output, VALUE obj)
 {
     switch (TYPE(obj)) {
         case T_STRING:
-            rb_str_buf_append(output, obj);
+        {
+            VALUE string = obj;
+            if (rb_obj_class(obj) != rb_cString) {
+                string = obj_to_s(obj);
+            }
+            rb_str_buf_append(output, string);
             break;
+        }
         case T_FIXNUM:
             write_fixnum(output, obj);
             break;
@@ -120,8 +128,7 @@ static void write_obj(VALUE output, VALUE obj)
             break;
         default:
         {
-            VALUE utils = rb_const_get(mLiquid, rb_intern("Utils"));
-            VALUE string = rb_funcall(utils, id_to_s, 1, obj);
+            VALUE string = rb_funcall(mLiquidUtils, id_to_s, 1, obj);
             if (!RB_TYPE_P(string, T_STRING)) {
                 string = obj_to_s(obj);
             }
@@ -192,12 +199,11 @@ static VALUE vm_invoke_filter(vm_t *vm, VALUE filter_name, size_t num_args)
 typedef struct vm_render_until_error_args {
     vm_t *vm;
     const uint8_t *ip; // use for initial address and to save an address for rescuing
-    const size_t *const_ptr;
+    const VALUE *const_ptr;
 
     /* rendering fields */
     VALUE output;
     const uint8_t *node_line_number;
-    bool native_variable_render;
 } vm_render_until_error_args_t;
 
 static VALUE raise_invalid_integer(VALUE unused_arg, VALUE exc)
@@ -431,7 +437,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 uint32_t variable_index = bytes_to_uint32(ip + VM_VARIABLE_LINE_NUMBER_SIZE);
                 ip += VM_VARIABLE_METADATA_SIZE;
 
-                if (args->native_variable_render) {
+                if (native_variable_render) {
                     args->ip = ip;
                     break;
                 }
@@ -486,7 +492,7 @@ VALUE liquid_vm_evaluate(VALUE context, vm_assembler_t *code)
 
     vm_render_until_error_args_t args = {
         .vm = vm,
-        .const_ptr = (const size_t *)code->constants.data,
+        .const_ptr = (const VALUE *)code->constants.data,
         .ip = code->instructions.data
     };
     vm_evaluate_rescue_args_t rescue_args = {
@@ -618,7 +624,6 @@ void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE c
         .const_ptr = const_ptr,
         .ip = block_body_instructions_ptr(body),
         .output = output,
-        .native_variable_render = RTEST(rb_funcall(cLiquidVariable, rb_intern("c_native_render?"), 0)),
     };
     vm_render_rescue_args_t rescue_args = {
         .render_args = &render_args,
@@ -631,12 +636,22 @@ void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE c
 }
 
 
+static VALUE vm_set_native_variable_render(VALUE self, VALUE enabled)
+{
+    native_variable_render = RTEST(enabled);
+    return enabled;
+}
+
 void liquid_define_vm(void)
 {
+    mLiquidUtils = rb_const_get(mLiquid, rb_intern("Utils"));
+    rb_global_variable(&mLiquidUtils);
+
     id_render_node = rb_intern("render_node");
     id_vm = rb_intern("vm");
 
     cLiquidCVM = rb_define_class_under(mLiquidC, "VM", rb_cObject);
     rb_undef_alloc_func(cLiquidCVM);
+    rb_define_singleton_method(cLiquidCVM, "native_variable_render=", vm_set_native_variable_render, 1);
     rb_global_variable(&cLiquidCVM);
 }
