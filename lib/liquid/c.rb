@@ -132,6 +132,11 @@ Liquid::Variable.class_eval do
       @c_native_render
     end
 
+    def c_disable_native_render
+      @c_native_render = false
+      Liquid::C::VM.native_variable_render = false
+    end
+
     def c_refresh_native_render
       @c_native_render = Liquid::C::VARIABLE_OUTPUT_METHODS.all? do |name, original|
         method_defined?(name) && instance_method(name) == original
@@ -183,27 +188,29 @@ module Liquid
   module C
     module VariableMethodObserver
       def method_added(name)
-        super
         Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
+        super
       end
 
       def method_removed(name)
-        super
         Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
+        super
       end
 
       def method_undefined(name)
-        super
         Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
+        super
       end
 
       def include(*modules)
+        Liquid::Variable.c_disable_native_render
         super
       ensure
         Liquid::Variable.c_refresh_native_render
       end
 
       def prepend(*modules)
+        Liquid::Variable.c_disable_native_render
         super
       ensure
         Liquid::Variable.c_refresh_native_render

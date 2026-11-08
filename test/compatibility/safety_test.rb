@@ -226,6 +226,47 @@ class Liquid514SafetyTest < Minitest::Test
     end
   end
 
+  def test_variable_cache_handles_reentrant_and_raising_callbacks
+    require "open3"
+    require "rbconfig"
+    [:method_added, :raising_method_added, :prepended].each do |callback|
+      code = <<~RUBY
+        require_relative "test/compatibility/boot"
+        template = Liquid::Template.parse("{{ value }}")
+        original = Liquid::Variable.instance_method(:render_obj_to_output)
+        hook = Module.new do
+          define_method(:render_obj_to_output) do |value, output|
+            output << "["
+            original.bind_call(self, value, output)
+            output << "]"
+          end
+        end
+        if #{callback == :prepended}
+          hook.define_singleton_method(:prepended) do |_base|
+            print template.render!("value" => "v")
+          end
+          Liquid::Variable.prepend(hook)
+        else
+          Liquid::Variable.define_singleton_method(:method_added) do |name|
+            if name == :render_obj_to_output
+              print template.render!("value" => "v")
+              raise "callback failure" if #{callback == :raising_method_added}
+            end
+          end
+          begin
+            Liquid::Variable.define_method(:render_obj_to_output, hook.instance_method(:render_obj_to_output))
+          rescue RuntimeError => error
+            raise unless error.message == "callback failure"
+          end
+        end
+        print template.render!("value" => "v")
+      RUBY
+      stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", code)
+      assert_predicate(status, :success?, "#{callback}: #{stderr}")
+      assert_equal("[v][v]", stdout, callback.to_s)
+    end
+  end
+
   def test_native_render_avoids_ruby_hook_checks_per_block
     return unless Compatibility::ENGINE == "c"
 
