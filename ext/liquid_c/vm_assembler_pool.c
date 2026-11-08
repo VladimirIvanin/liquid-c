@@ -56,13 +56,27 @@ VALUE vm_assembler_pool_new(void)
     return obj;
 }
 
+static VALUE initialize_assembler(VALUE opaque)
+{
+    vm_assembler_element_t *element = (void *)opaque;
+    vm_assembler_init(&element->vm_assembler);
+    return Qnil;
+}
+
 vm_assembler_t *vm_assembler_pool_alloc_assembler(vm_assembler_pool_t *pool)
 {
     vm_assembler_element_t *element;
     if (!pool->freelist) {
-        element = xmalloc(sizeof(vm_assembler_element_t));
+        vm_assembler_allocation_checkpoint();
+        element = ruby_xcalloc(1, sizeof(vm_assembler_element_t));
         element->next = NULL;
-        vm_assembler_init(&element->vm_assembler);
+        int state = 0;
+        rb_protect(initialize_assembler, (VALUE)element, &state);
+        if (state) {
+            vm_assembler_free(&element->vm_assembler);
+            xfree(element);
+            rb_jump_tag(state);
+        }
     } else {
         element = pool->freelist;
         pool->freelist = element->next;

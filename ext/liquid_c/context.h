@@ -16,6 +16,12 @@ typedef struct context {
 } context_t;
 
 void liquid_define_context(void);
+void liquid_define_native_values(void);
+#ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
+VALUE liquid_value_to_liquid(VALUE value);
+#else
+#define liquid_value_to_liquid(value) rb_funcall((value), id_to_liquid, 0)
+#endif
 void context_internal_init(VALUE context_obj, context_t *context);
 void context_refresh(context_t *context);
 void context_mark(context_t *context);
@@ -34,7 +40,7 @@ inline static VALUE value_to_liquid_and_set_context(VALUE value, VALUE context_t
 {
     if (rb_respond_to(value, id_set_context))
         rb_funcall(value, id_set_context, 1, context_to_set);
-    VALUE liquid_value = rb_funcall(value, id_to_liquid, 0);
+    VALUE liquid_value = liquid_value_to_liquid(value);
     if (RTEST(rb_funcall(value, rb_intern("!="), 1, liquid_value)) && rb_respond_to(liquid_value, id_set_context))
         rb_funcall(liquid_value, id_set_context, 1, context_to_set);
     return liquid_value;
@@ -42,7 +48,7 @@ inline static VALUE value_to_liquid_and_set_context(VALUE value, VALUE context_t
 
 inline static VALUE nested_value_to_liquid_and_set_context(VALUE value, VALUE context_to_set)
 {
-    VALUE liquid_value = rb_funcall(value, id_to_liquid, 0);
+    VALUE liquid_value = liquid_value_to_liquid(value);
     if (rb_respond_to(liquid_value, id_set_context))
         rb_funcall(liquid_value, id_set_context, 1, context_to_set);
     return liquid_value;

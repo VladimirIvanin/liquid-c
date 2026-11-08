@@ -45,6 +45,7 @@ static VALUE document_body_allocate(VALUE klass)
 
     VALUE obj = TypedData_Make_Struct(klass, document_body_t, &document_body_data_type, body);
     body->self = obj;
+    body->frontend_cache_size = -1;
     body->constants = rb_ary_new();
     body->buffer = c_buffer_init();
 
@@ -52,6 +53,16 @@ static VALUE document_body_allocate(VALUE klass)
 }
 
 #define DocumentBody_Get_Struct(obj, sval) TypedData_Get_Struct(obj, document_body_t, &document_body_data_type, sval)
+
+bool document_body_cache_stable(VALUE self, long size)
+{
+    if (RB_OBJ_FROZEN(self)) return false;
+    document_body_t *body;
+    DocumentBody_Get_Struct(self, body);
+    bool stable = body->frontend_cache_size == size;
+    body->frontend_cache_size = size;
+    return stable;
+}
 
 VALUE document_body_new_instance(void)
 {
@@ -64,6 +75,12 @@ document_body_entry_t document_body_write_block_body(VALUE self, bool blank, uin
 
     document_body_t *body;
     DocumentBody_Get_Struct(self, body);
+
+    if (c_buffer_size(&code->instructions) > UINT32_MAX ||
+        c_buffer_size(&code->constants) / sizeof(VALUE) > UINT32_MAX ||
+        (size_t)RARRAY_LEN(body->constants) > UINT32_MAX ||
+        c_buffer_size(&code->constants) / sizeof(VALUE) > UINT32_MAX - (size_t)RARRAY_LEN(body->constants))
+        rb_raise(rb_eRangeError, "Liquid document exceeds bytecode representation");
 
     c_buffer_zero_pad_for_alignment(&body->buffer, alignof(block_body_header_t));
 

@@ -63,6 +63,14 @@ module Compatibility
           cases << { id: "encoding_#{index}", source: "A\n{{ #{bytes} }}Z" }
         end
         sources = {
+          invalid_empty_tag: "{%%}",
+          invalid_trimmed_tag: "{%- -%}",
+          liquid_final_line: "{% liquid\n echo x %}",
+          nested_liquid_final_line: "{% liquid\n liquid echo x %}",
+          liquid_nested_error_line: "line\n{% liquid\n liquid missing_tag %}",
+          native_filter_arguments: "{{ x | probe: x, label: x.first | append: 'x' }}",
+          native_condition_chain: "{% if x == empty or x.first == 'a' and true %}yes{% else %}no{% endif %}",
+          native_for_header: "{% for i in (1..4) reversed offset: 1 limit: 2 %}{{ i }}{% endfor %}",
           quoted_delimiter: '{{ "}}" }}',
           quoted_tag_delimiter: '{% assign x = "%}" %}{{ x }}',
           negative_float_without_integer: "[{{ -.1 }}][{{ -.1 | plus: 1 }}]",

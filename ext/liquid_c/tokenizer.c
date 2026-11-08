@@ -9,6 +9,8 @@ static void tokenizer_mark(void *ptr)
 {
     tokenizer_t *tokenizer = ptr;
     rb_gc_mark(tokenizer->source);
+    rb_gc_mark(tokenizer->raw_tag_body);
+    rb_gc_mark(tokenizer->line_number);
 }
 
 static void tokenizer_free(void *ptr)
@@ -37,9 +39,9 @@ static VALUE tokenizer_allocate(VALUE klass)
 
     obj = TypedData_Make_Struct(klass, tokenizer_t, &tokenizer_data_type, tokenizer);
     tokenizer->source = Qnil;
+    tokenizer->line_number = Qnil;
     tokenizer->bug_compatible_whitespace_trimming = false;
-    tokenizer->raw_tag_body = NULL;
-    tokenizer->raw_tag_body_len = 0;
+    tokenizer->raw_tag_body = Qnil;
     return obj;
 }
 
@@ -62,23 +64,30 @@ static VALUE tokenizer_initialize_method(VALUE self, VALUE source, VALUE start_l
     tokenizer->cursor = RSTRING_PTR(source);
     tokenizer->cursor_end = tokenizer->cursor + RSTRING_LEN(source);
     tokenizer->lstrip_flag = false;
-    // tokenizer->line_number keeps track of the current line number or it is 0
-    // to indicate that line numbers aren't being calculated
-    tokenizer->line_number = FIX2UINT(start_line_number);
+    // nil indicates that line numbers are not being calculated. Native API
+    // callers retain the historical zero-as-disabled convention.
+    if (!RB_INTEGER_TYPE_P(start_line_number)) rb_raise(rb_eTypeError, "line number must be an Integer");
+    tokenizer->line_number = start_line_number == INT2FIX(0) ? Qnil : start_line_number;
     tokenizer->for_liquid_tag = RTEST(for_liquid_tag);
+    if (tokenizer->for_liquid_tag) {
+        while (tokenizer->cursor < tokenizer->cursor_end && tokenizer->cursor_end[-1] == '\n')
+            tokenizer->cursor_end--;
+    }
     return Qnil;
 }
 
 // Internal function to setup an existing tokenizer from C for a liquid tag.
 // This overwrites the passed in tokenizer, so a copy of the struct should
 // be used to reset the tokenizer after parsing the liquid tag.
-void tokenizer_setup_for_liquid_tag(tokenizer_t *tokenizer, const char *cursor, const char *cursor_end, int line_number)
+void tokenizer_setup_for_liquid_tag(tokenizer_t *tokenizer, const char *cursor, const char *cursor_end, VALUE line_number)
 {
     tokenizer->cursor = cursor;
     tokenizer->cursor_end = cursor_end;
     tokenizer->lstrip_flag = false;
     tokenizer->line_number = line_number;
     tokenizer->for_liquid_tag = true;
+    while (tokenizer->cursor < tokenizer->cursor_end && tokenizer->cursor_end[-1] == '\n')
+        tokenizer->cursor_end--;
 }
 
 // Tokenizes contents of {% liquid ... %}
@@ -94,11 +103,11 @@ static void tokenizer_next_for_liquid_tag(tokenizer_t *tokenizer, token_t *token
     const char *end_full = read_while(start_trimmed, end, not_newline);
     if (end_full < end) {
         tokenizer->cursor = end_full + 1;
-        if (tokenizer->line_number)
-            tokenizer->line_number++;
     } else {
         tokenizer->cursor = end_full;
     }
+    if (!NIL_P(tokenizer->line_number))
+        tokenizer->line_number = rb_funcall(tokenizer->line_number, rb_intern("+"), 1, INT2FIX(1));
 
     const char *end_trimmed = read_while_reverse(start_trimmed, end_full, rb_isspace);
 
@@ -125,8 +134,9 @@ static void tokenizer_next_for_template(tokenizer_t *tokenizer, token_t *token)
     token->type = TOKEN_RAW;
 
     while (cursor < last) {
-        if (*cursor++ != '{')
-            continue;
+        const char *opening = memchr(cursor, '{', (size_t)(last - cursor));
+        if (!opening) break;
+        cursor = opening + 1;
 
         char c = *cursor++;
         if (c != '%' && c != '{')
@@ -217,8 +227,9 @@ found:
 
     tokenizer->cursor = next_cursor ? next_cursor : cursor;
 
-    if (tokenizer->line_number) {
-        tokenizer->line_number += count_newlines(token->str_full, token->str_full + token->len_full);
+    if (!NIL_P(tokenizer->line_number)) {
+        int lines = count_newlines(token->str_full, token->str_full + token->len_full);
+        if (lines) tokenizer->line_number = rb_funcall(tokenizer->line_number, rb_intern("+"), 1, INT2NUM(lines));
     }
 }
 
@@ -272,10 +283,7 @@ static VALUE tokenizer_line_number_method(VALUE self)
     tokenizer_t *tokenizer;
     Tokenizer_Get_Struct(self, tokenizer);
 
-    if (tokenizer->line_number == 0)
-        return Qnil;
-
-    return UINT2NUM(tokenizer->line_number);
+    return tokenizer->line_number;
 }
 
 static VALUE tokenizer_for_liquid_tag_method(VALUE self)

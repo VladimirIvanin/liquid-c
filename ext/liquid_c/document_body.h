@@ -20,6 +20,7 @@ typedef struct block_body_header {
 typedef struct document_body {
     VALUE self;
     VALUE constants;
+    long frontend_cache_size;
     c_buffer_t buffer;
 } document_body_t;
 
@@ -30,6 +31,7 @@ typedef struct document_body_entry {
 
 void liquid_define_document_body(void);
 VALUE document_body_new_instance(void);
+bool document_body_cache_stable(VALUE self, long size);
 document_body_entry_t document_body_write_block_body(VALUE self, bool blank, uint32_t render_score, vm_assembler_t *code);
 
 static inline void document_body_entry_mark(document_body_entry_t *entry)

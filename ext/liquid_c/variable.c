@@ -5,7 +5,7 @@
 
 VALUE cLiquidCVariableExpression;
 
-void internal_variable_compile(variable_parse_args_t *parse_args, unsigned int line_number)
+void internal_variable_compile(variable_parse_args_t *parse_args, VALUE line_number)
 {
     vm_assembler_t *code = parse_args->code;
     VALUE markup = rb_enc_str_new(parse_args->markup, parse_args->markup_end - parse_args->markup, utf8_encoding);

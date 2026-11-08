@@ -16,7 +16,7 @@ typedef struct variable_parse_args {
 } variable_parse_args_t;
 
 void liquid_define_variable(void);
-void internal_variable_compile(variable_parse_args_t *parse_args, unsigned int line_number);
+void internal_variable_compile(variable_parse_args_t *parse_args, VALUE line_number);
 VALUE internal_variable_expression_evaluate(expression_t *expression, VALUE context);
 
 #endif

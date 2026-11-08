@@ -7,6 +7,22 @@
 
 static st_table *builtin_filter_table;
 
+#ifdef LIQUID_C_TEST_ALLOC_FAILURES
+static long allocation_failure_after = -1;
+
+void vm_assembler_allocation_checkpoint(void)
+{
+    if (allocation_failure_after == 0) rb_raise(rb_eNoMemError, "injected assembler allocation failure");
+    if (allocation_failure_after > 0) allocation_failure_after--;
+}
+
+static VALUE test_fail_assembler_allocation(VALUE self, VALUE after)
+{
+    allocation_failure_after = NUM2LONG(after);
+    return Qnil;
+}
+#endif
+
 // methods from Liquid::StandardFilters
 filter_desc_t builtin_filters[] = {
     { .name = "size" },
@@ -72,8 +88,12 @@ static void vm_assembler_common_init(vm_assembler_t *code)
 
 void vm_assembler_init(vm_assembler_t *code)
 {
+    memset(code, 0, sizeof(*code));
+    vm_assembler_allocation_checkpoint();
     code->instructions = c_buffer_allocate(8);
+    vm_assembler_allocation_checkpoint();
     code->constants = c_buffer_allocate(8 * sizeof(VALUE));
+    vm_assembler_allocation_checkpoint();
     code->constants_table = st_init_numtable();
     vm_assembler_common_init(code);
 }
@@ -90,7 +110,8 @@ void vm_assembler_free(vm_assembler_t *code)
 {
     c_buffer_free(&code->instructions);
     c_buffer_free(&code->constants);
-    st_free_table(code->constants_table);
+    if (code->constants_table) st_free_table(code->constants_table);
+    code->constants_table = NULL;
 }
 
 void vm_assembler_gc_mark(vm_assembler_t *code)
@@ -170,6 +191,9 @@ VALUE vm_assembler_disassemble(const uint8_t *start_ip, const uint8_t *end_ip, c
                 rb_str_catf(output, "render_variable_rescue(line_number: %u)\n", line_number);
                 break;
             }
+            case OP_RENDER_VARIABLE_RESCUE_W:
+                rb_str_catf(output, "render_variable_rescue(line_number: %"PRIsVALUE")\n", constant);
+                break;
 
             case OP_WRITE_RAW_W:
             case OP_WRITE_RAW:
@@ -245,12 +269,11 @@ static int merge_constants_table(st_data_t key, st_data_t value, VALUE _arg)
 {
     struct merge_constants_table_func_args *arg = (struct merge_constants_table_func_args *)_arg;
     st_table *dest_hash = arg->hash;
-    size_t new_value = value + arg->increment_amount;
-    if (new_value > UINT32_MAX) {
+    if (value > UINT32_MAX || arg->increment_amount > UINT32_MAX - value) {
         rb_raise(rb_eRangeError, "Too many bytecode constants");
     }
 
-    st_insert(dest_hash, key, new_value);
+    st_insert(dest_hash, key, value + arg->increment_amount);
 
     return ST_CONTINUE;
 }
@@ -258,11 +281,10 @@ static int merge_constants_table(st_data_t key, st_data_t value, VALUE _arg)
 static void offset_constant_index(uint8_t *index_bytes, size_t increment_amount)
 {
     uint32_t constant_index = bytes_to_uint32(index_bytes);
-    size_t new_constant_index = constant_index + increment_amount;
-    if (new_constant_index > UINT32_MAX) {
+    if (increment_amount > UINT32_MAX - constant_index) {
         rb_raise(rb_eRangeError, "Too many bytecode constants");
     }
-
+    size_t new_constant_index = constant_index + increment_amount;
     uint32_to_bytes((uint32_t)new_constant_index, index_bytes);
 }
 
@@ -278,6 +300,8 @@ void update_instructions_constants_table_index_ref(c_buffer_t *instructions, siz
         if (*ip == OP_RENDER_VARIABLE_RESCUE) {
             offset_constant_index(ip + 1 + VM_VARIABLE_LINE_NUMBER_SIZE, increment_amount);
         }
+        if (*ip == OP_RENDER_VARIABLE_RESCUE_W)
+            offset_constant_index(ip + 5, increment_amount);
 
         liquid_vm_next_instruction((const uint8_t **)&ip);
     }
@@ -302,6 +326,8 @@ void vm_assembler_concat(vm_assembler_t *dest, const vm_assembler_t *src)
     appended.data += offset;
     update_instructions_constants_table_index_ref(&appended, dest_element_count, &dest->constants);
 
+    if (src->max_stack_size > SIZE_MAX - dest->stack_size || src->stack_size > SIZE_MAX - dest->stack_size)
+        rb_raise(rb_eNoMemError, "Liquid stack size overflow");
     size_t max_src_stack_size = dest->stack_size + src->max_stack_size;
     if (max_src_stack_size > dest->max_stack_size)
         dest->max_stack_size = max_src_stack_size;
@@ -331,7 +357,7 @@ void vm_assembler_patch_lookup_guard(vm_assembler_t *code, size_t offset)
 
 void vm_assembler_require_stack_args(vm_assembler_t *code, unsigned int count)
 {
-    if (code->stack_size < code->protected_stack_size + count) {
+    if (code->stack_size < code->protected_stack_size || code->stack_size - code->protected_stack_size < count) {
         rb_raise(rb_eRuntimeError, "insufficient number of values on the stack");
     }
 }
@@ -350,6 +376,18 @@ void vm_assembler_add_write_raw(vm_assembler_t *code, const char *string, size_t
     }
 
     c_buffer_write(&code->instructions, (char *)string, size);
+}
+
+void vm_assembler_add_write_raw_value(vm_assembler_t *code, VALUE string)
+{
+    size_t size = (size_t)RSTRING_LEN(string);
+    if (!size) return;
+    if (size >= (1U << 24)) rb_raise(rb_eRangeError, "Raw body too large");
+    // Reserve before taking a pointer into an embedded Ruby string: allocation
+    // may compact the heap, but the subsequent writes cannot allocate.
+    c_buffer_reserve_for_write(&code->instructions, size + 4);
+    vm_assembler_add_write_raw(code, RSTRING_PTR(string), size);
+    RB_GC_GUARD(string);
 }
 
 void vm_assembler_add_write_node(vm_assembler_t *code, VALUE node)
@@ -416,7 +454,7 @@ void vm_assembler_add_filter(vm_assembler_t *code, VALUE filter_name, size_t arg
 
 static void ensure_parsing(vm_assembler_t *code)
 {
-    if (!code->parsing)
+    if (!code || !code->parsing)
         rb_raise(rb_eRuntimeError, "cannot extend code after it has finished being compiled");
 }
 
@@ -522,6 +560,7 @@ void vm_assembler_add_filter_from_ruby(vm_assembler_t *code, VALUE filter_name, 
 bool vm_assembler_opcode_has_constant(uint8_t ip) {
     if (
         ip == OP_PUSH_CONST ||
+        ip == OP_RENDER_VARIABLE_RESCUE_W ||
         ip == OP_EVALUATE ||
         ip == OP_WRITE_NODE ||
         ip == OP_FIND_STATIC_VAR ||
@@ -536,6 +575,9 @@ bool vm_assembler_opcode_has_constant(uint8_t ip) {
 
 void liquid_define_vm_assembler(void)
 {
+#ifdef LIQUID_C_TEST_ALLOC_FAILURES
+    rb_define_singleton_method(mLiquidC, "test_fail_assembler_allocation", test_fail_assembler_allocation, 1);
+#endif
     builtin_filter_table = st_init_numtable_with_size(ARRAY_LENGTH(builtin_filters));
     for (unsigned int i = 0; i < ARRAY_LENGTH(builtin_filters); i++) {
         filter_desc_t *filter = &builtin_filters[i];

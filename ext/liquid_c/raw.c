@@ -111,8 +111,7 @@ static VALUE raw_parse_method(VALUE self, VALUE tokens)
             VALUE body_str = rb_enc_str_new(body, body_len, utf8_encoding);
             rb_ivar_set(self, id_ivar_body, body_str);
             if (RBASIC_CLASS(self) == cLiquidRaw) {
-                tokenizer->raw_tag_body = RSTRING_PTR(body_str);
-                tokenizer->raw_tag_body_len = (unsigned int)body_len;
+                tokenizer->raw_tag_body = body_str;
             }
             return Qnil;
         }

@@ -24,7 +24,7 @@ static inline unsigned int bytes_to_uint24(const uint8_t *bytes)
 
 static inline void uint24_to_bytes(unsigned int num, uint8_t *bytes)
 {
-    assert(num < (1 << 24));
+    if (num >= (1U << 24)) rb_raise(rb_eRangeError, "Value exceeds 24-bit bytecode operand");
 
     bytes[0] = num >> 16;
     bytes[1] = num >> 8;

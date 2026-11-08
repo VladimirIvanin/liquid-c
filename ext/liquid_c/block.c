@@ -94,8 +94,11 @@ static VALUE block_body_allocate(VALUE klass)
 
 static VALUE block_body_initialize(VALUE self, VALUE parse_context)
 {
+    rb_check_frozen(self);
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
+    if (body->compiled || body->as.intermediate.code)
+        rb_raise(rb_eRuntimeError, "Liquid::C::BlockBody is already initialized");
 
     body->as.intermediate.parse_context = parse_context;
     body->as.intermediate.vm_assembler_pool = parse_context_get_vm_assembler_pool(parse_context);
@@ -105,13 +108,71 @@ static VALUE block_body_initialize(VALUE self, VALUE parse_context)
     return Qnil;
 }
 
+static VALUE block_body_initialize_copy(VALUE self, VALUE other)
+{
+    if (self == other) return self;
+    rb_obj_init_copy(self, other);
+    block_body_t *body, *original;
+    BlockBody_Get_Struct(self, body);
+    BlockBody_Get_Struct(other, original);
+    if (body->compiled || body->as.intermediate.code)
+        rb_raise(rb_eRuntimeError, "Liquid::C::BlockBody is already initialized");
+    if (original->compiled) {
+        *body = *original;
+    } else if (original->as.intermediate.code) {
+        body->as.intermediate.parse_context = original->as.intermediate.parse_context;
+        body->as.intermediate.vm_assembler_pool = original->as.intermediate.vm_assembler_pool;
+        body->as.intermediate.blank = original->as.intermediate.blank;
+        body->as.intermediate.render_score = original->as.intermediate.render_score;
+        vm_assembler_t *src = original->as.intermediate.code;
+        vm_assembler_t *dest = vm_assembler_pool_alloc_assembler(body->as.intermediate.vm_assembler_pool);
+        body->as.intermediate.code = dest;
+        c_buffer_concat(&dest->instructions, &src->instructions);
+        c_buffer_concat(&dest->constants, &src->constants);
+        st_table *table = st_copy(src->constants_table);
+        st_free_table(dest->constants_table);
+        dest->constants_table = table;
+        dest->max_stack_size = src->max_stack_size;
+        dest->stack_size = src->stack_size;
+        dest->protected_stack_size = src->protected_stack_size;
+        dest->parsing = src->parsing;
+    }
+    RB_GC_GUARD(other);
+    return self;
+}
+
 static int is_id(int c)
 {
     return rb_isalnum(c) || c == '_';
 }
 
+static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body, parse_context_t *parse_context);
+
+typedef struct {
+    VALUE body_obj;
+    block_body_t *body;
+    parse_context_t *context;
+    tokenizer_t saved;
+    tag_markup_t result;
+} liquid_parse_frame_t;
+
+static VALUE parse_liquid_body(VALUE opaque)
+{
+    liquid_parse_frame_t *frame = (void *)opaque;
+    frame->result = internal_block_body_parse(frame->body_obj, frame->body, frame->context);
+    return Qnil;
+}
+
+static VALUE restore_liquid_tokenizer(VALUE opaque)
+{
+    liquid_parse_frame_t *frame = (void *)opaque;
+    *frame->context->tokenizer = frame->saved;
+    return Qnil;
+}
+
 static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body, parse_context_t *parse_context)
 {
+    if (ruby_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
     tokenizer_t *tokenizer = parse_context->tokenizer;
     token_t token;
     tag_markup_t unknown_tag = { Qnil, Qnil };
@@ -119,9 +180,9 @@ static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body
     VALUE environment = Qundef;
 
     while (true) {
-        int token_start_line_number = tokenizer->line_number;
-        if (token_start_line_number != 0) {
-            rb_ivar_set(parse_context->ruby_obj, id_ivar_line_number, UINT2NUM(token_start_line_number));
+        VALUE token_start_line_number = tokenizer->line_number;
+        if (!NIL_P(token_start_line_number)) {
+            rb_ivar_set(parse_context->ruby_obj, id_ivar_line_number, token_start_line_number);
         }
         tokenizer_next(tokenizer, &token);
 
@@ -198,7 +259,9 @@ static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body
                         name_end++;
                         name_len++;
                     } else {
-                        VALUE str = rb_enc_str_new(token.str_trimmed, token.len_trimmed, utf8_encoding);
+                        const char *invalid = tokenizer->for_liquid_tag ? token.str_trimmed : token.str_full;
+                        long invalid_len = tokenizer->for_liquid_tag ? token.len_trimmed : token.len_full;
+                        VALUE str = rb_enc_str_new(invalid, invalid_len, utf8_encoding);
                         unknown_tag = (tag_markup_t) { str, str };
                         goto loop_break;
                     }
@@ -206,15 +269,16 @@ static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body
 
                 if (name_len == 6 && strncmp(name_start, "liquid", 6) == 0) {
                     const char *markup_start = read_while(name_end, end, rb_isspace);
-                    int line_number = token_start_line_number;
-                    if (line_number) {
-                        line_number += count_newlines(token.str_full, markup_start);
+                    VALUE line_number = token_start_line_number;
+                    if (!NIL_P(line_number)) {
+                        int lines = count_newlines(token.str_full, markup_start) - (tokenizer->for_liquid_tag ? 1 : 0);
+                        if (lines) line_number = rb_funcall(line_number, rb_intern("+"), 1, INT2NUM(lines));
                     }
 
-                    tokenizer_t saved_tokenizer = *tokenizer;
+                    liquid_parse_frame_t frame = { body_obj, body, parse_context, *tokenizer, { Qnil, Qnil } };
                     tokenizer_setup_for_liquid_tag(tokenizer, markup_start, end, line_number);
-                    unknown_tag = internal_block_body_parse(body_obj, body, parse_context);
-                    *tokenizer = saved_tokenizer;
+                    rb_ensure(parse_liquid_body, (VALUE)&frame, restore_liquid_tokenizer, (VALUE)&frame);
+                    unknown_tag = frame.result;
                     if (unknown_tag.name != Qnil) {
                         rb_funcall(cLiquidBlockBody, intern_unknown_tag_in_liquid_tag, 2, unknown_tag.name, parse_context->ruby_obj);
                         goto loop_break;
@@ -242,13 +306,9 @@ static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body
                 if (body->as.intermediate.blank && !RTEST(rb_funcall(new_tag, intern_is_blank, 0)))
                     body->as.intermediate.blank = false;
 
-                if (tokenizer->raw_tag_body) {
-                    if (tokenizer->raw_tag_body_len) {
-                        vm_assembler_add_write_raw(body->as.intermediate.code, tokenizer->raw_tag_body,
-                                                tokenizer->raw_tag_body_len);
-                    }
-                    tokenizer->raw_tag_body = NULL;
-                    tokenizer->raw_tag_body_len = 0;
+                if (!NIL_P(tokenizer->raw_tag_body)) {
+                    vm_assembler_add_write_raw_value(body->as.intermediate.code, tokenizer->raw_tag_body);
+                    tokenizer->raw_tag_body = Qnil;
                 } else {
                     vm_assembler_add_write_node(body->as.intermediate.code, new_tag);
                 }
@@ -267,16 +327,19 @@ loop_break:
     return unknown_tag;
 }
 
-static void ensure_intermediate(block_body_t *body)
+static void ensure_intermediate(VALUE self, block_body_t *body)
 {
+    rb_check_frozen(self);
     if (body->compiled) {
         rb_raise(rb_eRuntimeError, "Liquid::C::BlockBody is already compiled");
     }
+    if (!body->as.intermediate.code)
+        rb_raise(rb_eRuntimeError, "Liquid::C::BlockBody has not been initialized");
 }
 
-static void ensure_intermediate_not_parsing(block_body_t *body)
+static void ensure_intermediate_not_parsing(VALUE self, block_body_t *body)
 {
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
 
     if (body->as.intermediate.code->parsing) {
         rb_raise(rb_eRuntimeError, "Liquid::C::BlockBody is in a incompletely parsed state");
@@ -285,15 +348,17 @@ static void ensure_intermediate_not_parsing(block_body_t *body)
 
 static VALUE block_body_parse(VALUE self, VALUE tokenizer_obj, VALUE parse_context_obj)
 {
+    rb_check_frozen(self);
     parse_context_t parse_context = {
         .tokenizer_obj = tokenizer_obj,
         .ruby_obj = parse_context_obj,
     };
     Tokenizer_Get_Struct(tokenizer_obj, parse_context.tokenizer);
+    parse_context_get_document_body(parse_context_obj);
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
 
-    ensure_intermediate_not_parsing(body);
+    ensure_intermediate_not_parsing(self, body);
     if (body->as.intermediate.parse_context != parse_context_obj) {
         rb_raise(rb_eArgError, "Liquid::C::BlockBody#parse called with different parse context");
     }
@@ -310,7 +375,9 @@ static VALUE block_body_freeze(VALUE self)
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
 
-    if (body->compiled) return Qnil;
+    if (body->compiled) return rb_call_super(0, NULL);
+
+    ensure_intermediate_not_parsing(self, body);
 
     VALUE parse_context = body->as.intermediate.parse_context;
     VALUE document_body = parse_context_get_document_body(parse_context);
@@ -326,9 +393,7 @@ static VALUE block_body_freeze(VALUE self)
     body->compiled = true;
     vm_assembler_pool_recycle_assembler(assembler_pool, assembler);
 
-    rb_call_super(0, NULL);
-
-    return Qnil;
+    return rb_call_super(0, NULL);
 }
 
 static VALUE block_body_render_to_output_buffer(VALUE self, VALUE context, VALUE output)
@@ -362,7 +427,7 @@ static VALUE block_body_remove_blank_strings(VALUE self)
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
 
-    ensure_intermediate_not_parsing(body);
+    ensure_intermediate_not_parsing(self, body);
 
     if (!body->as.intermediate.blank) {
         rb_raise(rb_eRuntimeError, "remove_blank_strings only support being called on a blank block body");
@@ -433,8 +498,10 @@ static VALUE block_body_nodelist(VALUE self)
             }
 
             case OP_RENDER_VARIABLE_RESCUE:
+            case OP_RENDER_VARIABLE_RESCUE_W:
             {
-                uint32_t variable_index = bytes_to_uint32(ip + 1 + VM_VARIABLE_LINE_NUMBER_SIZE);
+                size_t line_size = *ip == OP_RENDER_VARIABLE_RESCUE_W ? 4 : VM_VARIABLE_LINE_NUMBER_SIZE;
+                uint32_t variable_index = bytes_to_uint32(ip + 1 + line_size);
                 VALUE variable = RARRAY_AREF(*constants, body_header->constants_offset + variable_index);
                 rb_ary_push(nodelist, variable);
                 break;
@@ -470,7 +537,7 @@ static VALUE block_body_add_evaluate_expression(VALUE self, VALUE expression)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_evaluate_expression_from_ruby(body->as.intermediate.code, self, expression);
     return self;
 }
@@ -479,7 +546,7 @@ static VALUE block_body_add_find_variable(VALUE self, VALUE expression)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_find_variable_from_ruby(body->as.intermediate.code, self, expression);
     return self;
 }
@@ -488,7 +555,7 @@ static VALUE block_body_add_lookup_guard(VALUE self)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     return SIZET2NUM(vm_assembler_add_lookup_guard(body->as.intermediate.code));
 }
 
@@ -497,7 +564,7 @@ static VALUE block_body_patch_lookup_guard(VALUE self, VALUE offset)
     size_t guard_offset = NUM2SIZET(offset);
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_patch_lookup_guard(body->as.intermediate.code, guard_offset);
     return self;
 }
@@ -506,7 +573,7 @@ static VALUE block_body_add_lookup_command(VALUE self, VALUE name)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_lookup_command_from_ruby(body->as.intermediate.code, name);
     return self;
 }
@@ -515,7 +582,7 @@ static VALUE block_body_add_lookup_key(VALUE self, VALUE expression)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_lookup_key_from_ruby(body->as.intermediate.code, self, expression);
     return self;
 }
@@ -524,7 +591,7 @@ static VALUE block_body_add_new_int_range(VALUE self)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_new_int_range_from_ruby(body->as.intermediate.code);
     return self;
 }
@@ -533,7 +600,7 @@ static VALUE block_body_add_hash_new(VALUE self, VALUE hash_size)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_hash_new_from_ruby(body->as.intermediate.code, hash_size);
     return self;
 }
@@ -542,7 +609,7 @@ static VALUE block_body_add_filter(VALUE self, VALUE filter_name, VALUE num_args
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
-    ensure_intermediate(body);
+    ensure_intermediate(self, body);
     vm_assembler_add_filter_from_ruby(body->as.intermediate.code, filter_name, num_args);
     return self;
 }
@@ -559,6 +626,7 @@ void liquid_define_block_body(void)
     rb_define_alloc_func(cLiquidCBlockBody, block_body_allocate);
 
     rb_define_method(cLiquidCBlockBody, "initialize", block_body_initialize, 1);
+    rb_define_private_method(cLiquidCBlockBody, "initialize_copy", block_body_initialize_copy, 1);
     rb_define_method(cLiquidCBlockBody, "parse", block_body_parse, 2);
     rb_define_method(cLiquidCBlockBody, "freeze", block_body_freeze, 0);
     rb_define_method(cLiquidCBlockBody, "render_to_output_buffer", block_body_render_to_output_buffer, 2);

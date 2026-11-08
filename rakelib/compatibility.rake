@@ -24,6 +24,14 @@ namespace :test do
       ruby "test/compatibility/safety_runner.rb"
     end
 
+    ["allocations", "sanitizers", "valgrind_native"].each do |kind|
+      desc "Build an isolated extension and check native #{kind}"
+      task kind do
+        mode = kind == "valgrind_native" ? "valgrind" : kind
+        ruby "test/compatibility/native_safety.rb", mode
+      end
+    end
+
     desc "Collect Ruby coverage while running the compatibility matrix"
     task coverage: :compile do
       FileUtils.rm_f(["tmp/coverage/ruby/.resultset.json", "tmp/coverage/ruby/.last_run.json"])
@@ -52,6 +60,7 @@ namespace :test do
       ["test/compatibility/compare.rb", "curated"],
       ["test/compatibility/compare.rb", "generated"],
       ["test/compatibility/safety_runner.rb"],
+      ["test/compatibility/native_safety.rb", "allocations"],
     ]
     results = commands.map { |args| system(RbConfig.ruby, "-Ilib", *args) }
     abort("Compatibility failures: see tmp/compatibility") unless results.all?

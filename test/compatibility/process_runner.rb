@@ -7,10 +7,10 @@ require "shellwords"
 module Compatibility
   module ProcessRunner
     class << self
-      def run(command, env:, log:, timeout:)
+      def run(command, env:, log:, timeout:, spawn_options: {})
         FileUtils.mkdir_p(File.dirname(log))
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        pid = Process.spawn(env, *command, out: log, err: [:child, :out], pgroup: true)
+        pid = Process.spawn(env, *command, out: log, err: [:child, :out], pgroup: true, **spawn_options)
         status = nil
         timed_out = false
         loop do

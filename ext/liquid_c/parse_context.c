@@ -16,7 +16,8 @@ static void parse_context_init_document_body(VALUE self)
 
 VALUE parse_context_get_document_body(VALUE self)
 {
-    assert(parse_context_document_body_initialized_p(self));
+    if (!parse_context_document_body_initialized_p(self))
+        rb_raise(rb_eRuntimeError, "Liquid::ParseContext#start_liquid_c_parsing has not yet been called");
 
     return rb_ivar_get(self, id_document_body);
 }

@@ -33,6 +33,7 @@ enum opcode {
     OP_JUMP_FWD,
     OP_LOOKUP_GUARD,
     OP_EVALUATE,
+    OP_RENDER_VARIABLE_RESCUE_W,
 };
 
 typedef struct {
@@ -59,6 +60,11 @@ typedef struct vm_assembler {
 
 void liquid_define_vm_assembler(void);
 void vm_assembler_init(vm_assembler_t *code);
+#ifdef LIQUID_C_TEST_ALLOC_FAILURES
+void vm_assembler_allocation_checkpoint(void);
+#else
+static inline void vm_assembler_allocation_checkpoint(void) {}
+#endif
 void vm_assembler_reset(vm_assembler_t *code);
 void vm_assembler_free(vm_assembler_t *code);
 void vm_assembler_gc_mark(vm_assembler_t *code);
@@ -69,6 +75,7 @@ size_t vm_assembler_add_lookup_guard(vm_assembler_t *code);
 void vm_assembler_patch_lookup_guard(vm_assembler_t *code, size_t offset);
 
 void vm_assembler_add_write_raw(vm_assembler_t *code, const char *string, size_t size);
+void vm_assembler_add_write_raw_value(vm_assembler_t *code, VALUE string);
 void vm_assembler_add_write_node(vm_assembler_t *code, VALUE node);
 void vm_assembler_add_push_fixnum(vm_assembler_t *code, VALUE num);
 void vm_assembler_add_push_literal(vm_assembler_t *code, VALUE literal);
@@ -86,6 +93,7 @@ bool vm_assembler_opcode_has_constant(uint8_t ip);
 
 static inline size_t vm_assembler_alloc_memsize(const vm_assembler_t *code)
 {
+    if (!code) return 0;
     return c_buffer_capacity(&code->instructions) + c_buffer_capacity(&code->constants) + sizeof(st_table);
 }
 
@@ -107,6 +115,8 @@ static inline uint32_t vm_assembler_write_ruby_constant(vm_assembler_t *code, VA
             rb_raise(rb_eRangeError, "Too many bytecode constants");
         }
 
+        // A failed growth must not publish an index without a constant slot.
+        c_buffer_reserve_for_write(&code->constants, sizeof(VALUE));
         st_insert(constants_table, constant, index);
         c_buffer_write(&code->constants, &constant, sizeof(VALUE));
         return index;
@@ -115,6 +125,7 @@ static inline uint32_t vm_assembler_write_ruby_constant(vm_assembler_t *code, VA
 
 static inline void vm_assembler_increment_stack_size(vm_assembler_t *code, size_t amount)
 {
+    if (amount > SIZE_MAX - code->stack_size) rb_raise(rb_eNoMemError, "Liquid stack size overflow");
     code->stack_size += amount;
     if (code->stack_size > code->max_stack_size)
         code->max_stack_size = code->stack_size;
@@ -196,7 +207,7 @@ static inline void vm_assembler_add_push_int16(vm_assembler_t *code, int16_t val
     vm_assembler_increment_stack_size(code, 1);
     uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 3);
     instructions[0] = OP_PUSH_INT16;
-    instructions[1] = value >> 8;
+    instructions[1] = (uint16_t)value >> 8;
     instructions[2] = (uint8_t)value;
 }
 
@@ -242,13 +253,19 @@ static inline void vm_assembler_add_new_int_range(vm_assembler_t *code)
     vm_assembler_write_opcode(code, OP_NEW_INT_RANGE);
 }
 
-static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code, size_t node_line_number, VALUE variable)
+static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code, VALUE node_line_number, VALUE variable)
 {
+    bool compact = NIL_P(node_line_number) ||
+        (RB_FIXNUM_P(node_line_number) && FIX2LONG(node_line_number) > 0 && FIX2LONG(node_line_number) < (1 << 24));
     uint32_t variable_index = vm_assembler_write_ruby_constant(code, variable);
-    uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 1 + VM_VARIABLE_METADATA_SIZE);
-    instructions[0] = OP_RENDER_VARIABLE_RESCUE;
-    uint24_to_bytes((unsigned int)node_line_number, &instructions[1]);
-    uint32_to_bytes(variable_index, &instructions[1 + VM_VARIABLE_LINE_NUMBER_SIZE]);
+    uint32_t line = compact ? (NIL_P(node_line_number) ? 0 : FIX2UINT(node_line_number)) :
+        vm_assembler_write_ruby_constant(code, node_line_number);
+    size_t line_size = compact ? VM_VARIABLE_LINE_NUMBER_SIZE : 4;
+    uint8_t *instructions = c_buffer_extend_for_write(&code->instructions, 1 + line_size + 4);
+    instructions[0] = compact ? OP_RENDER_VARIABLE_RESCUE : OP_RENDER_VARIABLE_RESCUE_W;
+    if (compact) uint24_to_bytes(line, instructions + 1);
+    else uint32_to_bytes(line, instructions + 1);
+    uint32_to_bytes(variable_index, instructions + 1 + line_size);
 }
 
 #endif

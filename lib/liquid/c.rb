@@ -142,7 +142,13 @@ Liquid::Variable.class_eval do
   alias_method :ruby_strict_parse, :strict_parse
 
   def strict_parse(markup)
-    ruby_strict_parse(markup)
+    result = liquid_c_native_parse(markup)
+    if result
+      @name, @filters = result
+      nil
+    else
+      ruby_strict_parse(markup)
+    end
   rescue Liquid::SyntaxError
     if !parse_context.liquid_c_nodes_disabled? && [:lax, :warn].include?(parse_context.error_mode)
       self.class.call_variable_fallback_stats_callback(parse_context)
@@ -313,3 +319,10 @@ module Liquid
     self.enabled = true
   end
 end
+
+require "liquid/c/native_parser"
+require "liquid/c/native_tags"
+require "liquid/c/native_values"
+
+# Parsing during require retains the original path until guards are ready.
+Liquid::C.native_enable_variable_frontend

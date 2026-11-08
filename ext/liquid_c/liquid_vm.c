@@ -198,6 +198,7 @@ static inline VALUE vm_stack_pop(vm_t *vm)
 
 static inline void vm_stack_reserve_for_write(vm_t *vm, size_t num_values)
 {
+    if (num_values > SIZE_MAX / sizeof(VALUE)) rb_raise(rb_eNoMemError, "Liquid stack size overflow");
     c_buffer_reserve_for_write(&vm->stack, num_values * sizeof(VALUE));
 }
 
@@ -266,7 +267,7 @@ static VALUE vm_invoke_filter(vm_t *vm, VALUE filter_name, size_t num_args)
     vm_filter_args_t call = { vm, filter_name, args, (int)num_args, vm->invoking_filter };
     vm->invoking_filter = true;
     VALUE result = rb_ensure(vm_try_filter, (VALUE)&call, vm_restore_filter, (VALUE)&call);
-    return rb_funcall(result, id_to_liquid, 0);
+    return liquid_value_to_liquid(result);
 }
 
 typedef struct vm_render_until_error_args {
@@ -383,8 +384,9 @@ static VALUE vm_render_until_error(VALUE uncast_args)
             }
             case OP_PUSH_INT16:
             {
-                int num = *(int8_t *)ip++; // big endian encoding, so first byte has sign
-                num = (num << 8) | *ip++;
+                unsigned int bits = ((unsigned int)ip[0] << 8) | ip[1];
+                int num = bits >= 0x8000 ? (int)bits - 0x10000 : (int)bits;
+                ip += 2;
                 vm_stack_push(vm, RB_INT2FIX(num));
                 break;
             }
@@ -548,13 +550,16 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 break;
             }
             case OP_RENDER_VARIABLE_RESCUE:
+            case OP_RENDER_VARIABLE_RESCUE_W:
             {
                 // Save state used by vm_render_rescue to rescue from a variable rendering exception
                 args->node_line_number = ip;
+                bool wide = ip[-1] == OP_RENDER_VARIABLE_RESCUE_W;
                 // vm_render_rescue will iterate from this instruction to the instruction
                 // following OP_POP_WRITE_VARIABLE to resume rendering from
-                uint32_t variable_index = bytes_to_uint32(ip + VM_VARIABLE_LINE_NUMBER_SIZE);
-                ip += VM_VARIABLE_METADATA_SIZE;
+                size_t line_size = wide ? 4 : VM_VARIABLE_LINE_NUMBER_SIZE;
+                uint32_t variable_index = bytes_to_uint32(ip + line_size);
+                ip += line_size + 4;
 
                 args->ip = ip;
                 variable_render_args_t render_args = {
@@ -610,7 +615,7 @@ static VALUE vm_restore_stack(VALUE uncast_args)
     vm_render_until_error_args_t *render_args = args->render_args;
     vm_t *vm = render_args->vm;
 
-    vm->stack.data_end = vm->stack.data + args->old_stack_byte_size;
+    vm->stack.data_end = vm->stack.data ? vm->stack.data + args->old_stack_byte_size : NULL;
 
     return Qnil;
 }
@@ -682,6 +687,9 @@ void liquid_vm_next_instruction(const uint8_t **ip_ptr)
         case OP_RENDER_VARIABLE_RESCUE:
             ip += VM_VARIABLE_METADATA_SIZE;
             break;
+        case OP_RENDER_VARIABLE_RESCUE_W:
+            ip += 8;
+            break;
 
         case OP_WRITE_RAW_W:
         case OP_JUMP_FWD_W:
@@ -721,11 +729,17 @@ static VALUE vm_render_rescue(VALUE uncast_args, VALUE exception)
     // skip to the end of the variable render to resume rendering if the error is handled
     render_args->ip = vm_skip_variable_instructions(ip);
     // remove temporary stack values from variable evaluation
-    vm->stack.data_end = vm->stack.data + args->old_stack_byte_size;
+    vm->stack.data_end = vm->stack.data ? vm->stack.data + args->old_stack_byte_size : NULL;
 
-    assert(render_args->node_line_number);
-    unsigned int node_line_number = bytes_to_uint24(render_args->node_line_number);
-    VALUE line_number = node_line_number != 0 ? UINT2NUM(node_line_number) : Qnil;
+    const uint8_t *line_metadata = render_args->node_line_number;
+    assert(line_metadata);
+    VALUE line_number;
+    if (line_metadata[-1] == OP_RENDER_VARIABLE_RESCUE_W) {
+        line_number = render_args->const_ptr[bytes_to_uint32(line_metadata)];
+    } else {
+        unsigned int line = bytes_to_uint24(line_metadata);
+        line_number = line ? UINT2NUM(line) : Qnil;
+    }
 
     rb_funcall(cLiquidBlockBody, rb_intern("c_rescue_render_node"), 5,
         vm->context.self, render_args->output, line_number, exception, blank_tag);

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "mkmf"
+$defs << "-DLIQUID_C_TEST_ALLOC_FAILURES" if ENV["LIQUID_C_TEST_ALLOC_FAILURES"] == "true"
 $CFLAGS << " -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers"
 append_cflags("-fvisibility=hidden")
 # In Ruby 2.6 and earlier, the Ruby headers did not have struct timespec defined
@@ -21,6 +22,38 @@ else
 end
 
 have_func "rb_hash_bulk_insert"
+# Link tests against a static libruby can find hidden symbols which extensions
+# cannot resolve at load time (MRI 3.3+). Probe the running process as well.
+begin
+  require "fiddle"
+  exported_method_entry = RUBY_ENGINE == "ruby" && Fiddle::Handle::DEFAULT["rb_callable_method_entry"]
+rescue LoadError, Fiddle::DLError
+  exported_method_entry = false
+end
+have_func("rb_callable_method_entry") if exported_method_entry
+if RUBY_ENGINE == "ruby" && defined?(Fiddle::Handle)
+  begin
+    exported_hash_identity = Fiddle::Handle::DEFAULT["rb_hash_compare_by_id_p"]
+  rescue Fiddle::DLError
+    exported_hash_identity = false
+  end
+  have_func("rb_hash_compare_by_id_p") if exported_hash_identity
+end
+
+if RUBY_ENGINE == "ruby" && defined?(Fiddle::Handle)
+  begin
+    exported_event_flags = Fiddle::Handle::DEFAULT["ruby_vm_event_flags"]
+  rescue Fiddle::DLError
+    exported_event_flags = false
+  end
+  if exported_event_flags && try_link(<<~C)
+    #include <ruby.h>
+    extern rb_event_flag_t ruby_vm_event_flags;
+    int main(void) { return (int)ruby_vm_event_flags; }
+  C
+    $defs << "-DHAVE_RUBY_VM_EVENT_FLAGS"
+  end
+end
 
 $warnflags&.gsub!("-Wdeclaration-after-statement", "")
 create_makefile("liquid_c")
