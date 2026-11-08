@@ -84,6 +84,30 @@ Pre-commit checks Ruby, workflows and staged secrets; pre-push runs the full
 check. CI also runs it on pull requests, pushes to `main` and weekly, including
 secret history and OSV scans. Dependabot updates gems and Actions weekly.
 
+### Extension compatibility tests
+
+`bundle exec rake test:compatibility:extensions` checks monkey patches, custom
+tags and blocks, filter overrides and reloading, decimal conversion, dynamic
+drops, layered registers, error recovery, and overlapping renders in two threads.
+The fixtures use synthetic data and require neither Rails nor an external app.
+Collection scenarios include parsing string conditions in `where_exp` and
+`find_exp`, nested filters inside `group_by_exp`, short circuit evaluation,
+and restoring bindings after errors. Mutable mapping drops, cached nested
+fragments, and clearing template assigns between payloads are also covered.
+Language scenarios exercise patched expression parsing, runtime expression
+objects, custom condition operators, component regions rendered through a
+runtime-created `render` tag, and parent block rendering from a drop.
+
+The suite is included in `bundle exec rake test`. It runs on pure Ruby and the
+`c`, `no_vm`, and `disabled` configurations in all four parser modes. Each parsed
+template checks its body class; patches installed before loading the extension
+are tested in a separate process with a timeout.
+
+```sh
+ENGINES=pure,c MODES=warn,strict bundle exec ruby test/compatibility/run.rb extensions
+TEST_SEED=90210 bundle exec rake test:compatibility:extensions
+```
+
 ## Contributing
 
 1. Fork it ( http://github.com/Shopify/liquid-c/fork )

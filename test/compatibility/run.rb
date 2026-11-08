@@ -24,6 +24,7 @@ suites = {
   "legacy" => "test/unit_test.rb",
   "upstream" => "test/upstream_test.rb",
   "regression" => "test/compatibility/regression_test.rb",
+  "extensions" => "test/compatibility/extensions_test.rb",
 }
 selected = suite == "all" ? suites.keys : [suite]
 selected.each do |name|

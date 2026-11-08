@@ -2,7 +2,7 @@
 
 namespace :test do
   namespace :compatibility do
-    ["upstream", "regression"].each do |suite|
+    ["upstream", "regression", "extensions"].each do |suite|
       desc "Run #{suite} against pure Liquid and three extension configurations"
       task suite => :compile do
         ruby "test/compatibility/run.rb", suite
