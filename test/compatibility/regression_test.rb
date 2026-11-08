@@ -5,8 +5,10 @@ require "minitest/autorun"
 require "minitest/mock"
 require "bigdecimal"
 require_relative "fixtures"
+require_relative "context_audit_cases"
 
 class Liquid514RegressionTest < Minitest::Test
+  include CompatibilityContextAuditCases
   TEMPLATE_CASES = {
     string_first: ["{{ x.first }}", { "x" => "éЖ" }, "é"],
     string_last: ["{{ x.last }}", { "x" => "éЖ" }, "Ж"],
@@ -464,6 +466,121 @@ class Liquid514RegressionTest < Minitest::Test
     value = string_class.new("value")
     template = Liquid::Template.parse("{{ value }}|{{ values }}", error_mode: Compatibility::MODE)
     assert_equal("[value]|[value]", template.render!("value" => value, "values" => [value]))
+  end
+
+  class CoercibleLimit
+    def coerce(value)
+      [value, 10]
+    end
+  end
+
+  def test_resource_limits_marshal_preserves_coercible_limits
+    limits = Liquid::ResourceLimits.new(render_score_limit: CoercibleLimit.new)
+    limits.increment_render_score(1)
+    restored = Marshal.load(Marshal.dump(limits))
+    assert_instance_of(CoercibleLimit, restored.render_score_limit)
+    assert_equal(1, restored.render_score)
+    assert_raises(Liquid::MemoryError) { restored.increment_render_score(10) }
+  end
+
+  def test_false_resource_limits_are_disabled_and_survive_marshal
+    limits = Liquid::ResourceLimits.new(
+      render_length_limit: false,
+      render_score_limit: false,
+      assign_score_limit: false,
+      cumulative_render_score_limit: false,
+      cumulative_assign_score_limit: false,
+    )
+    limits.increment_render_score(3)
+    limits.increment_assign_score(4)
+    limits.increment_write_score("output")
+    limits.reset
+    restored = Marshal.load(Marshal.dump(limits))
+    assert_equal(false, restored.render_length_limit)
+    assert_equal(false, restored.render_score_limit)
+    assert_equal(false, restored.assign_score_limit)
+    assert_equal(false, restored.cumulative_render_score_limit)
+    assert_equal(false, restored.cumulative_assign_score_limit)
+    assert_equal(3, restored.cumulative_render_score)
+    assert_equal(4, restored.cumulative_assign_score)
+  end
+
+  ["render", "assign"].each do |kind|
+    define_method("test_negative_cumulative_#{kind}_limit_is_checked_on_initialize") do
+      assert_raises(Liquid::MemoryError) do
+        Liquid::ResourceLimits.new("cumulative_#{kind}_score_limit".to_sym => -1)
+      end
+    end
+  end
+
+  def test_resource_limits_reinitialize_resets_scores_and_limits
+    limits = Liquid::ResourceLimits.new(render_score_limit: 5, cumulative_assign_score_limit: 9)
+    assert_raises(Liquid::MemoryError) { limits.increment_render_score(6) }
+    limits.increment_assign_score(3)
+    limits.send(:initialize, assign_score_limit: 2)
+    assert_nil(limits.render_score_limit)
+    assert_nil(limits.cumulative_assign_score_limit)
+    assert_equal(2, limits.assign_score_limit)
+    assert_equal(0, limits.render_score)
+    assert_equal(0, limits.assign_score)
+    assert_equal(0, limits.cumulative_render_score)
+    assert_equal(0, limits.cumulative_assign_score)
+    refute_predicate(limits, :reached?)
+  end
+
+  def test_frozen_resource_limits_and_clones_reject_mutations
+    original = Liquid::ResourceLimits.new(render_score_limit: 5).freeze
+    [original, original.clone].each do |limits|
+      assert_raises(FrozenError) { limits.render_length_limit = 5 }
+      assert_raises(FrozenError) { limits.render_score_limit = 5 }
+      assert_raises(FrozenError) { limits.assign_score_limit = 5 }
+      assert_raises(FrozenError) { limits.cumulative_render_score_limit = 5 }
+      assert_raises(FrozenError) { limits.cumulative_assign_score_limit = 5 }
+      assert_raises(FrozenError) { limits.increment_render_score(1) }
+      assert_raises(FrozenError) { limits.increment_assign_score(1) }
+      assert_raises(FrozenError) { limits.reset }
+      assert_raises(FrozenError) { limits.raise_limits_reached }
+      assert_raises(FrozenError) { limits.with_capture { flunk("Frozen capture yielded") } }
+      assert_raises(FrozenError) { limits.send(:initialize, {}) }
+      assert_equal(0, limits.render_score)
+      refute_predicate(limits, :reached?)
+    end
+    copy = original.dup
+    copy.increment_render_score(1)
+    assert_equal(1, copy.render_score)
+  end
+
+  class FreezingScoreIncrement
+    def initialize(limits)
+      @limits = limits
+    end
+
+    def coerce(value)
+      @limits.freeze
+      [value, 1]
+    end
+  end
+
+  def test_resource_limits_reject_mutation_when_score_coercion_freezes_them
+    ["render", "assign"].each do |kind|
+      limits = Liquid::ResourceLimits.new({})
+      assert_raises(FrozenError) do
+        limits.public_send("increment_#{kind}_score", FreezingScoreIncrement.new(limits))
+      end
+      assert_equal(0, limits.public_send("#{kind}_score"))
+      assert_equal(0, limits.public_send("cumulative_#{kind}_score"))
+    end
+  end
+
+  def test_freezing_resource_limits_during_capture_rejects_restore
+    limits = Liquid::ResourceLimits.new({})
+    assert_raises(FrozenError) { limits.with_capture { limits.freeze } }
+  end
+
+  def test_render_with_frozen_resource_limits_raises
+    limits = Liquid::ResourceLimits.new({}).freeze
+    context = Liquid::Context.build(resource_limits: limits, rethrow_errors: true)
+    assert_raises(FrozenError) { parse("{{ 1 }}").render!(context) }
   end
 
   def test_resource_limits_dup_preserves_state

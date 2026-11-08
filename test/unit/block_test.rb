@@ -53,6 +53,21 @@ class BlockTest < Minitest::Test
     assert_equal([], calls)
   end
 
+  def test_mutating_exposed_variable_tree_changes_rendering
+    template = Liquid::Template.parse('{{ value | append: "!" }}')
+    assert_equal("A!", template.render!("value" => "A"))
+    variable = template.root.body.nodelist.first
+    variable.filters.first[1][0] = "?"
+    2.times { assert_equal("A?", template.render!("value" => "A")) }
+  end
+
+  def test_exposed_tree_keeps_native_variable_hooks_and_exceptions_balanced
+    template = Liquid::Template.parse("{{ value | plus: 1 }}")
+    template.root.body.nodelist
+    assert_equal("3", template.render!("value" => 2))
+    assert_equal("4", template.render!("value" => 3))
+  end
+
   def test_disassemble_uses_constants_for_each_block
     template = Liquid::Template.parse("{% if x %}{{ inner }}{% endif %}{{ outer }}")
     root = template.root.body

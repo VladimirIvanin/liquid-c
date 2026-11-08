@@ -125,6 +125,49 @@ class VariableTest < Minitest::Test
     assert_equal("123456", output)
   end
 
+  def test_output_helper_supports_ruby_buffers_and_append_hooks
+    variable = Liquid::Variable.new("value", Liquid::ParseContext.new)
+    assert_nil(variable.render_obj_to_output(nil, nil))
+    output = []
+    assert_same(output, variable.render_obj_to_output("a", output))
+    assert_equal(["a"], output)
+    variable.render_obj_to_output(["b", "c"], output)
+    assert_equal(["a", "b", "c"], output)
+    output = +""
+    def output.<<(value)
+      super("[#{value}]")
+      :appended
+    end
+    assert_equal(:appended, variable.render_obj_to_output("a", output))
+    assert_equal("[a]", output)
+  end
+
+  def test_output_helper_preserves_return_values
+    variable = Liquid::Variable.new("value", Liquid::ParseContext.new)
+    output = +""
+    assert_same(output, variable.render_obj_to_output("v", output))
+    assert_nil(variable.render_obj_to_output(nil, output))
+    array = ["a"]
+    assert_same(array, variable.render_obj_to_output(array, output))
+    assert_equal("va", output)
+  end
+
+  def test_write_string_with_singleton_to_s
+    string = +"raw"
+    def string.to_s
+      "hooked"
+    end
+    assert_equal("hooked", Liquid::Template.parse("{{ value }}").render!("value" => string))
+  end
+
+  def test_write_array_with_singleton_each
+    array = ["raw"]
+    def array.each
+      yield "hooked"
+    end
+    assert_equal("hooked", Liquid::Template.parse("{{ value }}").render!("value" => array))
+  end
+
   def test_write_array
     output = Liquid::Template.parse("{{ ary }}").render({ "ary" => ["foo", 123, ["nested", "ary"], nil, 0.5] })
     assert_equal("foo123nestedary0.5", output)

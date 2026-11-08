@@ -20,6 +20,7 @@ typedef struct context {
 
 void liquid_define_context(void);
 void context_internal_init(VALUE context_obj, context_t *context);
+void context_refresh(context_t *context);
 void context_mark(context_t *context);
 VALUE context_find_variable(context_t *context, VALUE key, VALUE raise_on_not_found);
 void context_maybe_raise_undefined_variable(VALUE self, VALUE key);
@@ -60,7 +61,7 @@ inline static VALUE value_to_liquid_and_set_context(VALUE value, VALUE context_t
 inline static VALUE materialize_proc(VALUE context, VALUE scope, VALUE key, VALUE value)
 {
     if (scope != Qnil && rb_obj_is_proc(value) && rb_respond_to(scope, id_aset)) {
-        if (rb_proc_arity(value) == 1) {
+        if (rb_proc_arity(value) != 0) {
             value = rb_funcall(value, id_call, 1, context);
         } else {
             value = rb_funcall(value, id_call, 0);

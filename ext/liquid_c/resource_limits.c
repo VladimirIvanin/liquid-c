@@ -6,6 +6,7 @@ VALUE cLiquidResourceLimits;
 static void resource_limits_mark(void *ptr)
 {
     resource_limits_t *limits = ptr;
+    rb_gc_mark(limits->self);
     rb_gc_mark(limits->render_length_limit);
     rb_gc_mark(limits->render_score_limit);
     rb_gc_mark(limits->assign_score_limit);
@@ -35,7 +36,7 @@ const rb_data_type_t resource_limits_data_type = {
 
 static bool score_exceeds_limit(VALUE score, VALUE limit)
 {
-    if (NIL_P(limit)) {
+    if (!RTEST(limit)) {
         return false;
     }
 
@@ -58,12 +59,14 @@ static VALUE add_score(VALUE score, VALUE amount)
 __attribute__((noreturn))
 void resource_limits_raise_limits_reached(resource_limits_t *limits)
 {
+    rb_check_frozen(limits->self);
     limits->reached_limit = true;
     rb_raise(cMemoryError, "Memory limits exceeded");
 }
 
 static void resource_limits_reset(resource_limits_t *limits)
 {
+    rb_check_frozen(limits->self);
     limits->reached_limit = false;
     limits->last_capture_length = -1;
     limits->render_score = INT2FIX(0);
@@ -78,6 +81,7 @@ static VALUE resource_limits_allocate(VALUE klass)
 {
     resource_limits_t *limits;
     VALUE obj = TypedData_Make_Struct(klass, resource_limits_t, &resource_limits_data_type, limits);
+    limits->self = obj;
     limits->render_length_limit = Qnil;
     limits->render_score_limit = Qnil;
     limits->assign_score_limit = Qnil;
@@ -100,6 +104,7 @@ static VALUE resource_limits_render_length_limit_method(VALUE self)
 
 static VALUE resource_limits_set_render_length_limit_method(VALUE self, VALUE value)
 {
+    rb_check_frozen(self);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     limits->render_length_limit = value;
@@ -115,6 +120,7 @@ static VALUE resource_limits_render_score_limit_method(VALUE self)
 
 static VALUE resource_limits_set_render_score_limit_method(VALUE self, VALUE value)
 {
+    rb_check_frozen(self);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     limits->render_score_limit = value;
@@ -130,6 +136,7 @@ static VALUE resource_limits_assign_score_limit_method(VALUE self)
 
 static VALUE resource_limits_set_assign_score_limit_method(VALUE self, VALUE value)
 {
+    rb_check_frozen(self);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     limits->assign_score_limit = value;
@@ -145,6 +152,7 @@ static VALUE resource_limits_cumulative_render_score_limit_method(VALUE self)
 
 static VALUE resource_limits_set_cumulative_render_score_limit_method(VALUE self, VALUE value)
 {
+    rb_check_frozen(self);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     limits->cumulative_render_score_limit = value;
@@ -160,6 +168,7 @@ static VALUE resource_limits_cumulative_assign_score_limit_method(VALUE self)
 
 static VALUE resource_limits_set_cumulative_assign_score_limit_method(VALUE self, VALUE value)
 {
+    rb_check_frozen(self);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     limits->cumulative_assign_score_limit = value;
@@ -198,25 +207,44 @@ static VALUE resource_limits_initialize_method(int argc, VALUE *argv, VALUE self
 {
     VALUE render_length_limit, render_score_limit, assign_score_limit;
     VALUE cumulative_render_score_limit, cumulative_assign_score_limit;
-    rb_scan_args(argc, argv, "32",
-        &render_length_limit, &render_score_limit, &assign_score_limit,
-        &cumulative_render_score_limit, &cumulative_assign_score_limit);
+    rb_check_frozen(self);
+    if (argc == 1) {
+        VALUE options = argv[0];
+        ID aref = rb_intern("[]");
+        render_length_limit = rb_funcall(options, aref, 1, ID2SYM(rb_intern("render_length_limit")));
+        render_score_limit = rb_funcall(options, aref, 1, ID2SYM(rb_intern("render_score_limit")));
+        assign_score_limit = rb_funcall(options, aref, 1, ID2SYM(rb_intern("assign_score_limit")));
+        cumulative_render_score_limit = rb_funcall(options, aref, 1, ID2SYM(rb_intern("cumulative_render_score_limit")));
+        cumulative_assign_score_limit = rb_funcall(options, aref, 1, ID2SYM(rb_intern("cumulative_assign_score_limit")));
+    } else {
+        rb_scan_args(argc, argv, "32",
+            &render_length_limit, &render_score_limit, &assign_score_limit,
+            &cumulative_render_score_limit, &cumulative_assign_score_limit);
+    }
 
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
 
+    rb_check_frozen(self);
     limits->render_length_limit = render_length_limit;
     limits->render_score_limit = render_score_limit;
     limits->assign_score_limit = assign_score_limit;
     limits->cumulative_render_score_limit = cumulative_render_score_limit;
     limits->cumulative_assign_score_limit = cumulative_assign_score_limit;
+    limits->cumulative_render_score = INT2FIX(0);
+    limits->cumulative_assign_score = INT2FIX(0);
+    resource_limits_reset(limits);
     return Qnil;
 }
 
 static void increment_render_score(resource_limits_t *limits, VALUE amount)
 {
-    limits->render_score = add_score(limits->render_score, amount);
-    limits->cumulative_render_score = add_score(limits->cumulative_render_score, amount);
+    VALUE score = add_score(limits->render_score, amount);
+    rb_check_frozen(limits->self);
+    limits->render_score = score;
+    VALUE cumulative_score = add_score(limits->cumulative_render_score, amount);
+    rb_check_frozen(limits->self);
+    limits->cumulative_render_score = cumulative_score;
     if (score_exceeds_limit(limits->render_score, limits->render_score_limit) ||
         score_exceeds_limit(limits->cumulative_render_score, limits->cumulative_render_score_limit)) {
         resource_limits_raise_limits_reached(limits);
@@ -233,8 +261,12 @@ static VALUE resource_limits_increment_render_score_method(VALUE self, VALUE amo
 
 static void increment_assign_score(resource_limits_t *limits, VALUE amount)
 {
-    limits->assign_score = add_score(limits->assign_score, amount);
-    limits->cumulative_assign_score = add_score(limits->cumulative_assign_score, amount);
+    VALUE score = add_score(limits->assign_score, amount);
+    rb_check_frozen(limits->self);
+    limits->assign_score = score;
+    VALUE cumulative_score = add_score(limits->cumulative_assign_score, amount);
+    rb_check_frozen(limits->self);
+    limits->cumulative_assign_score = cumulative_score;
     if (score_exceeds_limit(limits->assign_score, limits->assign_score_limit) ||
         score_exceeds_limit(limits->cumulative_assign_score, limits->cumulative_assign_score_limit)) {
         resource_limits_raise_limits_reached(limits);
@@ -259,6 +291,7 @@ void resource_limits_increment_write_score(resource_limits_t *limits, VALUE outp
     long captured = RSTRING_LEN(output);
     if (limits->last_capture_length >= 0) {
         long increment = captured - limits->last_capture_length;
+        rb_check_frozen(limits->self);
         limits->last_capture_length = captured;
         increment_assign_score(limits, LONG2NUM(increment));
     } else if (score_exceeds_limit(LONG2NUM(captured), limits->render_length_limit)) {
@@ -298,12 +331,14 @@ struct capture_ensure_t {
 static VALUE capture_ensure(VALUE data)
 {
     struct capture_ensure_t *args = (struct capture_ensure_t *)data;
+    rb_check_frozen(args->limits->self);
     args->limits->last_capture_length = args->old_capture_length;
     return Qnil;
 }
 
 static VALUE resource_limits_with_capture_method(VALUE self)
 {
+    rb_check_frozen(self);
     resource_limits_t *limits;
     ResourceLimits_Get_Struct(self, limits);
     struct capture_ensure_t args = { limits, limits->last_capture_length };
@@ -345,22 +380,18 @@ static VALUE resource_limits_initialize_copy(VALUE self, VALUE original)
     ResourceLimits_Get_Struct(self, limits);
     ResourceLimits_Get_Struct(original, source);
     *limits = *source;
+    limits->self = self;
     return self;
 }
 
 static VALUE resource_limits_marshal_load(VALUE self, VALUE state)
 {
+    rb_check_frozen(self);
     Check_Type(state, T_ARRAY);
     if (RARRAY_LEN(state) != 11) {
         rb_raise(rb_eArgError, "Invalid resource limits state");
     }
 
-    for (long i = 0; i < 9; i++) {
-        VALUE value = RARRAY_AREF(state, i);
-        if (!(i < 5 && NIL_P(value)) && !rb_obj_is_kind_of(value, rb_cNumeric)) {
-            rb_raise(rb_eTypeError, "Resource limits state must contain Numeric scores and Numeric or nil limits");
-        }
-    }
     VALUE reached = RARRAY_AREF(state, 9);
     if (reached != Qtrue && reached != Qfalse) {
         rb_raise(rb_eTypeError, "Resource limits reached state must be boolean");

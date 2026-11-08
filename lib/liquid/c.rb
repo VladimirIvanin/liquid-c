@@ -119,37 +119,18 @@ module Liquid
 end
 
 Liquid::Variable.class_eval do
-  Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES = [:render, :render_to_output_buffer, :render_obj_to_output].freeze
-  Liquid::C::VARIABLE_OUTPUT_METHODS = Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.to_h do |name|
-    output_method = instance_method(name)
-    source = File.join(Gem.loaded_specs.fetch("liquid").full_gem_path, "lib/liquid/variable.rb")
-    original = output_method if output_method.owner == self && output_method.source_location&.first == source
-    [name, original]
+  output_methods = [:render, :render_to_output_buffer, :render_obj_to_output]
+  source = File.join(Gem.loaded_specs.fetch("liquid").full_gem_path, "lib/liquid/variable.rb")
+  Liquid::C::VARIABLE_RENDERERS = output_methods.filter_map do |name|
+    original = instance_method(name)
+    original = original.super_method while original && original.owner != self
+    next unless original&.source_location&.first == source
+
+    define_method(:"ruby_#{name}", original)
+    [name, original, instance_method(:"c_#{name}")]
   end.freeze
 
   class << self
-    def c_native_render?
-      @c_native_render
-    end
-
-    def c_disable_native_render
-      @c_native_render = false
-      Liquid::C::VM.native_variable_render = false
-    end
-
-    def c_refresh_native_render
-      @c_native_render = Liquid::C::VARIABLE_OUTPUT_METHODS.all? do |name, original|
-        method_defined?(name) && instance_method(name) == original
-      end
-      Liquid::C::VM.native_variable_render = @c_native_render
-      observer = Liquid::C::VariableMethodObserver
-      ancestors.take_while { |ancestor| ancestor != Object }.each do |ancestor|
-        next if ancestor.frozen? || ancestor.singleton_class.ancestors.include?(observer)
-
-        ancestor.singleton_class.prepend(observer)
-      end
-    end
-
     def c_parse(markup, parse_context)
       if /\A\s*-\.\d/.match?(markup)
         Liquid::Usage.increment("liquid_c_negative_float_without_integer")
@@ -183,43 +164,6 @@ Liquid::Variable.class_eval do
     end
   end
 end
-
-module Liquid
-  module C
-    module VariableMethodObserver
-      def method_added(name)
-        Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
-        super
-      end
-
-      def method_removed(name)
-        Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
-        super
-      end
-
-      def method_undefined(name)
-        Liquid::Variable.c_refresh_native_render if Liquid::C::VARIABLE_OUTPUT_METHOD_NAMES.include?(name)
-        super
-      end
-
-      def include(*modules)
-        Liquid::Variable.c_disable_native_render
-        super
-      ensure
-        Liquid::Variable.c_refresh_native_render
-      end
-
-      def prepend(*modules)
-        Liquid::Variable.c_disable_native_render
-        super
-      ensure
-        Liquid::Variable.c_refresh_native_render
-      end
-    end
-  end
-end
-
-Liquid::Variable.c_refresh_native_render
 
 Liquid::StrainerTemplate.class_eval do
   class << self
@@ -270,6 +214,9 @@ Liquid::Context.class_eval do
   alias_method :ruby_evaluate, :evaluate
   alias_method :ruby_find_variable, :find_variable
   alias_method :ruby_strict_variables=, :strict_variables=
+  alias_method :ruby_strict_filters=, :strict_filters=
+  alias_method :ruby_global_filter=, :global_filter=
+  alias_method :ruby_add_filters, :add_filters
 
   # This isn't entered often by Ruby (most calls stay in C via VariableLookup#evaluate)
   # so the wrapper method isn't costly.
@@ -307,16 +254,34 @@ module Liquid
 
       def enabled=(value)
         @enabled = value
+        Liquid::C::VM.invalidate_contexts
+        Liquid::C::VARIABLE_RENDERERS.each do |name, ruby_method, native_method|
+          next if Liquid::Variable.frozen?
+
+          current = Liquid::Variable.instance_method(name)
+          current = current.super_method while current && current.owner != Liquid::Variable
+          expected = value ? ruby_method : native_method
+          if current == expected
+            replacement = value ? :"c_#{name}" : :"ruby_#{name}"
+            Liquid::Variable.alias_method(name, replacement)
+          end
+        end
         if value
           Liquid::Context.send(:alias_method, :[], :c_parse_evaluate)
           Liquid::Context.send(:alias_method, :evaluate, :c_evaluate)
           Liquid::Context.send(:alias_method, :find_variable, :c_find_variable_kwarg)
           Liquid::Context.send(:alias_method, :strict_variables=, :c_strict_variables=)
+          Liquid::Context.send(:alias_method, :strict_filters=, :c_strict_filters=)
+          Liquid::Context.send(:alias_method, :global_filter=, :c_global_filter=)
+          Liquid::Context.send(:alias_method, :add_filters, :c_add_filters)
         else
           Liquid::Context.send(:alias_method, :[], :ruby_parse_evaluate)
           Liquid::Context.send(:alias_method, :evaluate, :ruby_evaluate)
           Liquid::Context.send(:alias_method, :find_variable, :ruby_find_variable)
           Liquid::Context.send(:alias_method, :strict_variables=, :ruby_strict_variables=)
+          Liquid::Context.send(:alias_method, :strict_filters=, :ruby_strict_filters=)
+          Liquid::Context.send(:alias_method, :global_filter=, :ruby_global_filter=)
+          Liquid::Context.send(:alias_method, :add_filters, :ruby_add_filters)
         end
       end
     end

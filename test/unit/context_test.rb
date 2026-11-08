@@ -2,8 +2,11 @@
 
 require "test_helper"
 require "bigdecimal"
+require_relative "../compatibility/context_audit_cases"
 
 class ContextTest < Minitest::Test
+  include CompatibilityContextAuditCases
+
   def test_evaluate_works_with_normal_values
     context = Liquid::Context.new
 

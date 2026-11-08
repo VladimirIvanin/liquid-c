@@ -271,13 +271,180 @@ class Liquid514SafetyTest < Minitest::Test
     return unless Compatibility::ENGINE == "c"
 
     template = Liquid::Template.parse("{% for i in (1..1000) %}{% if i %}{{ i }}{% endif %}{% endfor %}")
+    assert_instance_of(Liquid::C::BlockBody, template.root.body)
+    assert_nil(Liquid::Context.instance_method(:evaluate).source_location)
     calls = []
     trace = TracePoint.new(:call, :c_call) do |event|
-      calls << event.method_id if [:c_native_render?, :instance_method, :render_obj_to_output].include?(event.method_id)
+      identity_check = [:c_native_render?, :instance_method].include?(event.method_id)
+      ruby_variable_render = event.event == :call && event.self.is_a?(Liquid::Variable) &&
+        [:render, :render_to_output_buffer, :render_obj_to_output].include?(event.method_id)
+      calls << event.method_id if identity_check || ruby_variable_render
     end
     output = trace.enable { template.render! }
     assert_equal((1..1000).to_a.join, output)
     assert_empty(calls)
+  end
+
+  def test_switching_engine_with_frozen_variable_class
+    code = <<~RUBY
+      require_relative "test/compatibility/boot"
+      Liquid::Variable.freeze
+      if defined?(Liquid::C)
+        Liquid::C.enabled = false
+        disabled = Liquid::Template.parse("{{ value }}")
+        print disabled.render!("value" => "ruby")
+        Liquid::C.enabled = true
+      end
+      print Liquid::Template.parse("{{ value }}").render!("value" => "native")
+    RUBY
+    expected = Compatibility::ENGINE == "pure" ? "native" : "rubynative"
+    assert_variable_dispatch_subprocess(code, expected)
+  end
+
+  def test_variable_dispatch_handles_frozen_objects_and_callback_bypasses
+    cases = {
+      frozen_class: <<~RUBY,
+        hook = Module.new
+        Liquid::Variable.prepend(hook)
+        template = Liquid::Template.parse('{{ value }}')
+        Liquid::Variable.freeze
+        hook.module_eval do
+          def render_obj_to_output(obj, output)
+            output << '['
+            super
+            output << ']'
+          end
+        end
+      RUBY
+      frozen_singleton_module: <<~'RUBY',
+        hook = Module.new do
+          def render(context)
+            "[#{super}]"
+          end
+        end
+        hook.singleton_class.freeze
+        template = Liquid::Template.parse('{{ value }}')
+        Liquid::Variable.prepend(hook)
+      RUBY
+      direct_prepend_features: <<~'RUBY',
+        template = Liquid::Template.parse('{{ value }}')
+        hook = Module.new do
+          def render(context)
+            "[#{super}]"
+          end
+        end
+        hook.send(:prepend_features, Liquid::Variable)
+      RUBY
+      prepended_method_added: <<~'RUBY',
+        template = Liquid::Template.parse('{{ value }}')
+        Liquid::Variable.singleton_class.prepend(Module.new do
+          def method_added(_name)
+          end
+        end)
+        original = Liquid::Variable.instance_method(:render)
+        Liquid::Variable.define_method(:render) do |context|
+          "[#{original.bind_call(self, context)}]"
+        end
+      RUBY
+    }
+    cases.each do |name, code|
+      assert_variable_dispatch_subprocess(code + '2.times { print template.render!("value" => "v") }', "[v][v]", name)
+    end
+  end
+
+  def test_filter_can_install_output_hook_for_current_variable
+    code = <<~RUBY
+      filter = Module.new do
+        def install_hook(value)
+          Liquid::Variable.prepend(Module.new do
+            def render_obj_to_output(obj, output)
+              output << '['
+              super
+              output << ']'
+            end
+          end)
+          value
+        end
+      end
+      environment = Liquid::Environment.build { |env| env.register_filter(filter) }
+      template = Liquid::Template.parse('{{ value | install_hook }}{{ value }}', environment: environment)
+      print template.render!('value' => 'v')
+    RUBY
+    assert_variable_dispatch_subprocess(code, "[v][v]")
+  end
+
+  def test_singleton_variable_render_is_used_after_tree_access
+    code = <<~'RUBY'
+      template = Liquid::Template.parse('A{{ value }}Z')
+      node = template.root.nodelist.grep(Liquid::Variable).first
+      def node.render(context)
+        "[#{super}]"
+      end
+      2.times { print template.render!('value' => 'v') }
+    RUBY
+    assert_variable_dispatch_subprocess(code, "A[v]ZA[v]Z")
+  end
+
+  def test_array_output_dispatches_hook_for_every_nested_value
+    code = <<~RUBY
+      Liquid::Variable.prepend(Module.new do
+        def render_obj_to_output(obj, output)
+          output << '['
+          super
+          output << ']'
+        end
+      end)
+      template = Liquid::Template.parse('{{ value }}')
+      print template.render!('value' => ['a', ['b', nil]])
+    RUBY
+    assert_variable_dispatch_subprocess(code, "[[a][[b][]]]")
+  end
+
+  def test_reading_tree_inside_filter_does_not_repeat_filter_execution
+    code = <<~RUBY
+      template = nil
+      calls = 0
+      filter = Module.new do
+        define_method(:read_tree) do |value|
+          calls += 1
+          template.root.nodelist
+          value
+        end
+      end
+      environment = Liquid::Environment.build { |env| env.register_filter(filter) }
+      template = Liquid::Template.parse('{{ value | read_tree }}', environment: environment)
+      2.times { print template.render!('value' => 'v') }
+      print ':', calls
+    RUBY
+    assert_variable_dispatch_subprocess(code, "vv:2")
+  end
+
+  def test_variable_render_can_reenter_with_live_filter_arguments
+    code = <<~RUBY
+      variable = nil
+      Liquid::Variable.prepend(Module.new do
+        define_method(:render) do |context|
+          variable = self
+          super(context)
+        end
+      end)
+      context = Liquid::Context.new('x' => 'x')
+      nested = false
+      context.environments.first['trigger'] = proc do |ctx|
+        if nested
+          '!'
+        else
+          begin
+            nested = true
+            variable.render(ctx)
+          ensure
+            nested = false
+          end
+        end
+      end
+      print Liquid::Template.parse('{{ x | append: trigger }}').render!(context)
+    RUBY
+    assert_variable_dispatch_subprocess(code, "xx!")
   end
 
   def test_recursive_array_output_raises_without_crashing
@@ -315,5 +482,16 @@ class Liquid514SafetyTest < Minitest::Test
     stdout, stderr, status = Open3.capture3(*command, "-e", code)
     assert_predicate(status, :success?, stderr)
     assert_equal("AokZ:1", stdout)
+  end
+
+  private
+
+  def assert_variable_dispatch_subprocess(code, expected, label = nil)
+    require "open3"
+    require "rbconfig"
+    source = "require_relative \"test/compatibility/boot\"\n" + code
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", source)
+    assert_predicate(status, :success?, "#{label}: #{stderr}")
+    assert_equal(expected, stdout, label.to_s)
   end
 end

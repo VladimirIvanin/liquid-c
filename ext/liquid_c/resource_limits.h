@@ -2,6 +2,7 @@
 #define LIQUID_RESOURCE_LIMITS
 
 typedef struct resource_limits {
+    VALUE self;
     VALUE render_length_limit;
     VALUE render_score_limit;
     VALUE assign_score_limit;

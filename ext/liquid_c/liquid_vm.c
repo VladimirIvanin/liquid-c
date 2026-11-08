@@ -12,7 +12,10 @@ ID id_vm;
 
 static VALUE cLiquidCVM;
 static VALUE mLiquidUtils;
-static bool native_variable_render;
+static unsigned long context_generation = 1;
+static bool native_enabled;
+static ID id_render, id_render_to_output_buffer, id_render_obj_to_output, id_ruby_render;
+static ID id_each;
 
 static void vm_mark(void *ptr)
 {
@@ -20,6 +23,9 @@ static void vm_mark(void *ptr)
 
     c_buffer_rb_gc_mark(&vm->stack);
     context_mark(&vm->context);
+    for (vm_variable_frame_t *frame = vm->variable_frame; frame; frame = frame->previous) {
+        rb_gc_mark(frame->variable);
+    }
 }
 
 static void vm_free(void *ptr)
@@ -49,9 +55,18 @@ static VALUE vm_internal_new(VALUE context)
 
     vm->invoking_filter = false;
 
+    vm->context_generation = context_generation;
     context_internal_init(context, &vm->context);
 
     return obj;
+}
+
+static void vm_refresh_context(vm_t *vm)
+{
+    if (vm->context_generation != context_generation || !native_enabled) {
+        vm->context_generation = context_generation;
+        context_refresh(&vm->context);
+    }
 }
 
 vm_t *vm_from_context(VALUE context)
@@ -62,7 +77,9 @@ vm_t *vm_from_context(VALUE context)
         rb_ivar_set(context, id_vm, vm_obj);
     }
     // instance variable is hidden from ruby so should be safe to unwrap it without type checking
-    return DATA_PTR(vm_obj);
+    vm_t *vm = DATA_PTR(vm_obj);
+    vm_refresh_context(vm);
+    return vm;
 }
 
 bool liquid_vm_filtering(VALUE context)
@@ -94,16 +111,27 @@ static VALUE obj_to_s(VALUE obj)
 
 static void write_obj(VALUE output, VALUE obj);
 
-static VALUE write_array(VALUE array, VALUE output, int recursive)
+typedef struct {
+    VALUE variable;
+    VALUE output;
+} array_writer_args_t;
+
+static VALUE write_array_element(RB_BLOCK_CALL_FUNC_ARGLIST(value, uncast_args))
+{
+    array_writer_args_t *args = (void *)uncast_args;
+    if (NIL_P(args->variable)) {
+        write_obj(args->output, value);
+        return args->output;
+    }
+    return rb_funcall(args->variable, id_render_obj_to_output, 2, value, args->output);
+}
+
+static VALUE write_array(VALUE array, VALUE uncast_args, int recursive)
 {
     if (recursive || ruby_stack_check()) {
         rb_raise(rb_eSysStackError, "stack level too deep");
     }
-
-    for (long i = 0; i < RARRAY_LEN(array); i++) {
-        write_obj(output, RARRAY_AREF(array, i));
-    }
-    return Qnil;
+    return rb_block_call(array, id_each, 0, NULL, write_array_element, uncast_args);
 }
 
 static void write_obj(VALUE output, VALUE obj)
@@ -111,19 +139,18 @@ static void write_obj(VALUE output, VALUE obj)
     switch (TYPE(obj)) {
         case T_STRING:
         {
-            VALUE string = obj;
-            if (rb_obj_class(obj) != rb_cString) {
-                string = obj_to_s(obj);
-            }
-            rb_str_buf_append(output, string);
+            rb_str_buf_append(output, obj_to_s(obj));
             break;
         }
         case T_FIXNUM:
             write_fixnum(output, obj);
             break;
         case T_ARRAY:
-            rb_exec_recursive(write_array, obj, output);
+        {
+            array_writer_args_t args = { Qnil, output };
+            rb_exec_recursive(write_array, obj, (VALUE)&args);
             break;
+        }
         case T_NIL:
             break;
         default:
@@ -174,6 +201,7 @@ static inline void vm_stack_reserve_for_write(vm_t *vm, size_t num_values)
 
 static VALUE vm_invoke_filter(vm_t *vm, VALUE filter_name, size_t num_args)
 {
+    vm_refresh_context(vm);
     VALUE *popped_args = vm_stack_pop_n(vm, num_args);
     /* We have to copy popped_args_ptr to the stack because the VM
      * no longer holds onto these objects, so they have to exist on
@@ -204,6 +232,9 @@ typedef struct vm_render_until_error_args {
     /* rendering fields */
     VALUE output;
     const uint8_t *node_line_number;
+    const VALUE *nodelist;
+    bool evaluate_variable;
+    size_t max_variable_stack_size;
 } vm_render_until_error_args_t;
 
 static VALUE raise_invalid_integer(VALUE unused_arg, VALUE exc)
@@ -253,6 +284,25 @@ static const uint8_t *vm_skip_variable_instructions(const uint8_t *ip)
     return ip;
 }
 
+typedef struct {
+    vm_t *vm;
+    vm_variable_frame_t frame;
+    VALUE output;
+} variable_render_args_t;
+
+static VALUE vm_call_variable_render(VALUE uncast_args)
+{
+    variable_render_args_t *args = (void *)uncast_args;
+    return rb_funcall(args->frame.variable, id_render_to_output_buffer, 2, args->vm->context.self, args->output);
+}
+
+static VALUE vm_restore_variable_frame(VALUE uncast_args)
+{
+    variable_render_args_t *args = (void *)uncast_args;
+    args->vm->variable_frame = args->frame.previous;
+    return Qnil;
+}
+
 // Actually returns a bool resume_rendering value
 static VALUE vm_render_until_error(VALUE uncast_args)
 {
@@ -294,6 +344,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
             }
             case OP_FIND_STATIC_VAR:
             {
+                vm_refresh_context(vm);
                 constant_index = bytes_to_uint32(ip);
                 constant = constants[constant_index];
                 ip += 4;
@@ -303,6 +354,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
             }
             case OP_FIND_VAR:
             {
+                vm_refresh_context(vm);
                 VALUE key = vm_stack_pop(vm);
                 VALUE value = context_find_variable(&vm->context, key, Qtrue);
                 vm_stack_push(vm, value);
@@ -319,6 +371,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
             /* fallthrough */
             case OP_LOOKUP_KEY:
             {
+                vm_refresh_context(vm);
                 bool is_command = opcode == OP_LOOKUP_COMMAND;
                 VALUE key = vm_stack_pop(vm);
                 VALUE object = vm_stack_pop(vm);
@@ -437,21 +490,33 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 uint32_t variable_index = bytes_to_uint32(ip + VM_VARIABLE_LINE_NUMBER_SIZE);
                 ip += VM_VARIABLE_METADATA_SIZE;
 
-                if (native_variable_render) {
-                    args->ip = ip;
-                    break;
-                }
-
-                VALUE variable = constants[variable_index];
+                args->ip = ip;
+                variable_render_args_t render_args = {
+                    .vm = vm,
+                    .frame = {
+                        .previous = vm->variable_frame,
+                        .variable = constants[variable_index],
+                        .instructions = ip,
+                        .constants = constants,
+                        .nodelist = args->nodelist,
+                        .max_stack_size = args->max_variable_stack_size,
+                    },
+                    .output = output,
+                };
+                vm->variable_frame = &render_args.frame;
+                rb_ensure(vm_call_variable_render, (VALUE)&render_args, vm_restore_variable_frame, (VALUE)&render_args);
                 ip = vm_skip_variable_instructions(ip);
-                rb_funcall(cLiquidBlockBody, id_render_node, 3, vm->context.self, output, variable);
                 args->ip = NULL;
                 resource_limits_increment_write_score(vm->context.resource_limits, output);
                 break;
             }
             case OP_POP_WRITE:
             {
+                if (args->evaluate_variable) {
+                    return false;
+                }
                 VALUE var_result = vm_stack_pop(vm);
+                vm_refresh_context(vm);
                 if (vm->context.global_filter != Qnil)
                     var_result = rb_funcall(vm->context.global_filter, id_call, 1, var_result);
                 write_obj(output, var_result);
@@ -612,7 +677,7 @@ static VALUE vm_render_rescue(VALUE uncast_args, VALUE exception)
     return true;
 }
 
-void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE context, VALUE output)
+void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE context, VALUE output, const VALUE *nodelist)
 {
     vm_t *vm = vm_from_context(context);
 
@@ -624,6 +689,8 @@ void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE c
         .const_ptr = const_ptr,
         .ip = block_body_instructions_ptr(body),
         .output = output,
+        .nodelist = nodelist,
+        .max_variable_stack_size = body->max_stack_size,
     };
     vm_render_rescue_args_t rescue_args = {
         .render_args = &render_args,
@@ -636,10 +703,70 @@ void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE c
 }
 
 
-static VALUE vm_set_native_variable_render(VALUE self, VALUE enabled)
+static VALUE variable_render(VALUE self, VALUE context)
 {
-    native_variable_render = RTEST(enabled);
-    return enabled;
+    if (!native_enabled) {
+        return rb_funcall(self, id_ruby_render, 1, context);
+    }
+    vm_t *vm = vm_from_context(context);
+    vm_variable_frame_t *frame = vm->variable_frame;
+    if (!frame || frame->variable != self || *frame->nodelist != Qundef) {
+        return rb_funcall(self, id_ruby_render, 1, context);
+    }
+
+    vm_stack_reserve_for_write(vm, frame->max_stack_size);
+    vm_render_until_error_args_t render_args = {
+        .vm = vm,
+        .const_ptr = frame->constants,
+        .ip = frame->instructions,
+        .evaluate_variable = true,
+    };
+    vm_evaluate_rescue_args_t rescue_args = {
+        .render_args = &render_args,
+        .old_stack_byte_size = c_buffer_size(&vm->stack),
+    };
+    rb_rescue(vm_render_until_error, (VALUE)&render_args, vm_evaluate_rescue, (VALUE)&rescue_args);
+    VALUE result = vm_stack_pop(vm);
+    assert(rescue_args.old_stack_byte_size == c_buffer_size(&vm->stack));
+    vm_refresh_context(vm);
+    if (!NIL_P(vm->context.global_filter)) {
+        result = rb_funcall(vm->context.global_filter, id_call, 1, result);
+    }
+    return result;
+}
+
+static VALUE variable_render_to_output_buffer(VALUE self, VALUE context, VALUE output)
+{
+    if (!native_enabled) {
+        return rb_funcall(self, rb_intern("ruby_render_to_output_buffer"), 2, context, output);
+    }
+    VALUE result = rb_funcall(self, id_render, 1, context);
+    rb_funcall(self, id_render_obj_to_output, 2, result, output);
+    return output;
+}
+
+static VALUE variable_render_obj_to_output(VALUE self, VALUE object, VALUE output)
+{
+    if (!native_enabled || !RB_TYPE_P(output, T_STRING) ||
+        !rb_method_basic_definition_p(CLASS_OF(output), rb_intern("<<"))) {
+        return rb_funcall(self, rb_intern("ruby_render_obj_to_output"), 2, object, output);
+    }
+    if (RB_TYPE_P(object, T_ARRAY)) {
+        array_writer_args_t args = { self, output };
+        return rb_exec_recursive(write_array, object, (VALUE)&args);
+    }
+    if (NIL_P(object)) {
+        return Qnil;
+    }
+    write_obj(output, object);
+    return output;
+}
+
+static VALUE vm_invalidate_contexts(VALUE self)
+{
+    context_generation++;
+    native_enabled = RTEST(rb_ivar_get(mLiquidC, rb_intern("@enabled")));
+    return Qnil;
 }
 
 void liquid_define_vm(void)
@@ -647,11 +774,20 @@ void liquid_define_vm(void)
     mLiquidUtils = rb_const_get(mLiquid, rb_intern("Utils"));
     rb_global_variable(&mLiquidUtils);
 
+    id_render = rb_intern("render");
+    id_render_to_output_buffer = rb_intern("render_to_output_buffer");
+    id_render_obj_to_output = rb_intern("render_obj_to_output");
+    id_ruby_render = rb_intern("ruby_render");
+    id_each = rb_intern("each");
+    rb_define_method(cLiquidVariable, "c_render", variable_render, 1);
+    rb_define_method(cLiquidVariable, "c_render_to_output_buffer", variable_render_to_output_buffer, 2);
+    rb_define_method(cLiquidVariable, "c_render_obj_to_output", variable_render_obj_to_output, 2);
+
     id_render_node = rb_intern("render_node");
     id_vm = rb_intern("vm");
 
     cLiquidCVM = rb_define_class_under(mLiquidC, "VM", rb_cObject);
     rb_undef_alloc_func(cLiquidCVM);
-    rb_define_singleton_method(cLiquidCVM, "native_variable_render=", vm_set_native_variable_render, 1);
+    rb_define_singleton_method(cLiquidCVM, "invalidate_contexts", vm_invalidate_contexts, 0);
     rb_global_variable(&cLiquidCVM);
 }

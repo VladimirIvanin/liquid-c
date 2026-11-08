@@ -30,16 +30,30 @@ class ResourceLimitsTest < Minitest::Test
     limits = Liquid::ResourceLimits.new(render_score_limit: 5)
     limits.increment_render_score(3)
     original = limits.marshal_dump
-    11.times do |index|
+    [9, 10].each do |index|
       state = original.dup
       state[index] = "invalid"
       assert_raises(TypeError) { limits.marshal_load(state) }
       assert_equal(original, limits.marshal_dump)
     end
+    [[], original + [nil]].each do |state|
+      assert_raises(ArgumentError) { limits.marshal_load(state) }
+      assert_equal(original, limits.marshal_dump)
+    end
+    assert_raises(TypeError) { limits.marshal_load(nil) }
+    assert_equal(original, limits.marshal_dump)
     state = original.dup
     state[10] = 2**100
     assert_raises(RangeError) { limits.marshal_load(state) }
     assert_equal(original, limits.marshal_dump)
+  end
+
+  def test_marshal_load_preserves_frozen_state
+    limits = Liquid::ResourceLimits.new(render_score_limit: 5)
+    state = limits.marshal_dump
+    limits.freeze
+    assert_raises(FrozenError) { limits.marshal_load(state) }
+    assert_equal(state, limits.marshal_dump)
   end
 
   def test_increment_render_score
