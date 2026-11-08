@@ -9,10 +9,6 @@ root = File.expand_path("../..", __dir__)
 directory = File.join(root, "tmp/coverage/native")
 build = File.join(directory, "build")
 FileUtils.mkdir_p(build)
-FileUtils.rm_f([
-  File.join(root, "tmp/coverage/ruby/.resultset.json"),
-  File.join(root, "tmp/coverage/ruby/.last_run.json"),
-])
 Dir[File.join(build, "*.{gcda,gcno,o}")].each { |path| FileUtils.rm_f(path) }
 steps = []
 Dir.chdir(build) do
@@ -20,7 +16,9 @@ Dir.chdir(build) do
     [
       RbConfig.ruby,
       File.join(root, "ext/liquid_c/extconf.rb"),
-      "--with-cflags=--coverage -O0 -g",
+      # Keep basic loop optimization: the intentional 500,000-level stack
+      # exhaustion probe repeatedly scans long lines and times out at -O0.
+      "--with-cflags=--coverage -O1 -g",
       "--with-ldflags=--coverage",
     ],
     env: { "DEBUG" => "true" },
@@ -37,14 +35,22 @@ Dir.chdir(build) do
   abort("Coverage compilation failed") unless steps.last[:success]
 end
 Dir.chdir(root) do
-  commands = [["run.rb", "all"], ["compare.rb", "curated"], ["compare.rb", "generated"], ["safety_runner.rb", "safety"]]
+  commands = [
+    ["run.rb", "all"],
+    ["compare.rb", "curated"],
+    ["compare.rb", "generated"],
+    ["corpus_runner.rb", "smoke"],
+    ["safety_runner.rb", "safety"],
+  ]
   commands.each do |script, suite|
     steps << Compatibility::ProcessRunner.run(
       [RbConfig.ruby, "-Ilib", "test/compatibility/#{script}", suite],
       env: {
         "LIQUID_C_EXTENSION_DIR" => build,
-        "ENGINES" => "c,no_vm,disabled",
-        "COVERAGE" => "true",
+        "ENGINES" => script == "corpus_runner.rb" ? "pure,c,no_vm,disabled" : "c,no_vm,disabled",
+        # Ruby coverage turns on VM tracing, which deliberately disables native
+        # frontend optimizations and changes subprocess stdout via SimpleCov.
+        "COVERAGE" => nil,
         "RESULTS_DIR" => File.join(directory, suite),
       },
       log: File.join(directory, "#{script}-#{suite}.log"),

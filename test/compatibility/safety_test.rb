@@ -5,6 +5,49 @@ require "minitest/autorun"
 require_relative "fixtures"
 
 class Liquid514SafetyTest < Minitest::Test
+  def test_adversarial_range_regex_terminates
+    [1_000, 10_000, 30_000].each do |size|
+      malformed = "(1..#{"1.." * size} )"
+      refute_match(Liquid::Expression::RANGES_REGEX, malformed)
+      refute_instance_of(Liquid::RangeLookup, Liquid::Expression.parse(malformed))
+    end
+  end
+
+  def test_adversarial_unclosed_delimiters_terminate
+    ["{{", "{%"].each do |opening|
+      assert_raises(Liquid::SyntaxError) { Liquid::Template.parse(opening + " " * 3_000, error_mode: :strict2) }
+    end
+    ["{% case x %}", "{% cycle %}", "{% cycle x: %}"].each do |source|
+      assert_raises(Liquid::SyntaxError) { Liquid::Template.parse(source, error_mode: :strict2) }
+    end
+  end
+
+  def test_adversarial_strip_html_terminates
+    template = Liquid::Template.parse("{{ html | strip_html }}", error_mode: :strict)
+    ["<script", "<style", "<script>"].each do |opening|
+      result = template.render!("html" => opening * 10_000)
+      assert_instance_of(String, result)
+      assert_equal("ok", template.render!("html" => "<b>ok</b>"))
+    end
+  end
+
+  def test_adversarial_recursion_and_liquid_depth_are_bounded
+    environment = Liquid::Environment.new
+    environment.file_system = Compatibility::FileSystem.new(
+      "include_loop" => "{% include 'include_loop' %}",
+      "render_loop" => "{% render 'render_loop' %}",
+    )
+    ["include", "render"].each do |tag|
+      template = Liquid::Template.parse("{% #{tag} '#{tag}_loop' %}", environment: environment, error_mode: :strict)
+      assert_raises(Liquid::StackLevelError) { template.render! }
+    end
+    source = "{% liquid\n#{"liquid " * 100}echo 'ok'\n%}"
+    assert_equal("ok", Liquid::Template.parse(source, error_mode: :strict2, line_numbers: true).render!)
+    source = "{% liquid\n#{"if true\n" * 200}echo 'ok'\n#{"endif\n" * 200}%}"
+    assert_raises(Liquid::StackLevelError) { Liquid::Template.parse(source, error_mode: :strict2, line_numbers: true) }
+    assert_equal("after", Liquid::Template.parse("{{ value }}", error_mode: :strict).render!("value" => "after"))
+  end
+
   def test_gc_compaction_keeps_compiled_values_alive
     source = 'é{{ values[0] | append: "!" }}{% capture x %}{{ values[1] }}{% endcapture %}{{ x }}'
     template = Liquid::Template.parse(source, error_mode: :strict)

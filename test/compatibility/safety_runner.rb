@@ -30,7 +30,7 @@ engines.product(names).each do |engine, name|
     command,
     env: env,
     log: File.join(directory, "#{label}.log"),
-    timeout: Integer(ENV.fetch("TEST_TIMEOUT", "120")),
+    timeout: Integer(ENV.fetch("TEST_TIMEOUT", name.start_with?("test_adversarial_") ? "10" : "120")),
   )
   results << result.merge(engine: engine, test: name)
   outcome = result[:summary] || "exit=#{result[:exitstatus]} signal=#{result[:signal]} timeout=#{result[:timeout]}"

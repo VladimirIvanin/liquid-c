@@ -3,6 +3,15 @@
 require "test_helper"
 
 class BlockTest < Minitest::Test
+  def test_multiline_tag_prefix_updates_error_location
+    ["{% #\nfoo\nbar %}", "{%\n#\nfoo\nbar %}"].each_with_index do |source, index|
+      error = assert_raises(Liquid::SyntaxError) do
+        Liquid::Template.parse(source, error_mode: :strict2, line_numbers: true)
+      end
+      assert_equal(index + 2, error.line_number)
+    end
+  end
+
   def test_no_allocation_of_trimmed_strings
     template = Liquid::Template.parse("{{ a -}}     {{- b }}")
     assert_equal(2, template.root.nodelist.size)

@@ -286,13 +286,23 @@ static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body
                     break;
                 }
 
+                const char *markup_start = read_while(name_end, end, rb_isspace);
+                if (!NIL_P(token_start_line_number)) {
+                    // FullToken counts newlines in the whitespace on either
+                    // side of the tag name before constructing the Ruby tag.
+                    int lines = count_newlines(start, name_start) + count_newlines(name_end, markup_start);
+                    if (lines) {
+                        VALUE line_number = rb_funcall(token_start_line_number, rb_intern("+"), 1, INT2NUM(lines));
+                        rb_ivar_set(parse_context->ruby_obj, id_ivar_line_number, line_number);
+                    }
+                }
+
                 VALUE tag_name = rb_enc_str_new(name_start, name_end - name_start, utf8_encoding);
                 if (environment == Qundef) {
                     environment = rb_funcall(parse_context->ruby_obj, rb_intern("environment"), 0);
                 }
                 VALUE tag_class = rb_funcall(environment, rb_intern("tag_for_name"), 1, tag_name);
 
-                const char *markup_start = read_while(name_end, end, rb_isspace);
                 VALUE markup = rb_enc_str_new(markup_start, end - markup_start, utf8_encoding);
 
                 if (tag_class == Qnil) {

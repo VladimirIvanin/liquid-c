@@ -5,6 +5,9 @@
 
 Partial native implementation of Liquid 5.14.x in C. Compatibility tests use Liquid 5.14.0.
 
+The [compatibility corpus guide](test/fixtures/liquid_spec/README.md) documents
+slice hook/monkey-patch tests, the pinned external corpus, coverage, and reproduction commands.
+
 ## Installation
 
 Add these lines to your application's Gemfile:

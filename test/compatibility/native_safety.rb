@@ -52,7 +52,7 @@ end
 Dir.chdir(root) do
   if mode != "allocations"
     tests = "require_relative 'test/unit/native_parser_test'; require_relative 'test/unit/native_tags_test'; " \
-      "require_relative 'test/unit/audit_regression_test'"
+      "require_relative 'test/unit/audit_regression_test'; require_relative 'test/unit/block_test'"
     command = [RbConfig.ruby, "-Ilib", "-Itest", "-e", tests]
     command.insert(1, "test/compatibility/memcheck.rb") if mode == "valgrind"
     run.call(command, env, "regressions", 300)

@@ -7,14 +7,26 @@ require_relative "fixtures"
 module Compatibility
   module Observation
     class << self
-      def normalize(value)
+      def normalize(value, active = {}.compare_by_identity)
+        if value.is_a?(Array) || value.is_a?(Hash)
+          return { "recursive" => true } if active.key?(value)
+
+          active[value] = true
+          begin
+            return value.map { |entry| normalize(entry, active) } if value.is_a?(Array)
+
+            # JSON object keys would collapse 1, "1", and :"1", and lose
+            # binary key encodings. Encode keys as values instead.
+            return { "hash" => value.map { |key, entry| [normalize(key, active), normalize(entry, active)] } }
+          ensure
+            active.delete(value)
+          end
+        end
         case value
         when String
           { "bytes" => Base64.strict_encode64(value.b), "encoding" => value.encoding.name }
-        when Array
-          value.map { |entry| normalize(entry) }
-        when Hash
-          value.to_h { |key, entry| [key.to_s, normalize(entry)] }
+        when Symbol
+          { "symbol" => value.to_s }
         when NilClass, TrueClass, FalseClass, Numeric
           value
         else
