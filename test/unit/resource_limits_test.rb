@@ -3,6 +3,31 @@
 require "test_helper"
 
 class ResourceLimitsTest < Minitest::Test
+  def test_subclass_preserves_overridden_limit_check
+    subclass = Class.new(Liquid::ResourceLimits) do
+      def increment_render_score(amount)
+        super(amount * 2)
+      end
+    end
+    original_enabled = Liquid::C.enabled
+
+    [false, true].each do |enabled|
+      Liquid::C.enabled = enabled
+      limits = subclass.new(render_score_limit: 5)
+
+      assert_instance_of(subclass, limits)
+      limits.increment_render_score(2)
+      assert_equal(4, limits.render_score)
+      assert_raises(Liquid::MemoryError) { limits.increment_render_score(1) }
+    end
+  ensure
+    Liquid::C.enabled = original_enabled
+  end
+
+  def test_base_class_uses_native_limits_when_enabled
+    assert_instance_of(Liquid::C::ResourceLimits, Liquid::ResourceLimits.new({}))
+  end
+
   def test_marshal_keeps_legacy_inactive_capture_marker
     limits = Liquid::ResourceLimits.new({})
     state = limits.marshal_dump

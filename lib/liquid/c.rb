@@ -267,7 +267,7 @@ Liquid::Context.prepend(Liquid::C::ContextCopyPatch)
 Liquid::ResourceLimits.class_eval do
   class << self
     def new(limits)
-      if Liquid::C.enabled
+      if equal?(Liquid::ResourceLimits) && Liquid::C.enabled
         Liquid::C::ResourceLimits.new(
           limits[:render_length_limit],
           limits[:render_score_limit],
