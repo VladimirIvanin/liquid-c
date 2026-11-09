@@ -1,5 +1,9 @@
 min_version = "2026.11.4"
 
+[env]
+GEM_HOME = false
+GEM_PATH = false
+
 [tools]
 ruby = "3.3.0"
 hk = "2.11.1"
