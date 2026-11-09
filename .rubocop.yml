@@ -7,7 +7,9 @@ AllCops:
   Exclude:
     - 'vendor/bundle/**/*'
     - 'tmp/**/*'
+    - 'docs/**/*'
     - 'test/fixtures/liquid_spec/**/*.rb'
+    - 'performance/theme/**/*'
 
 Style/GlobalVars:
   Exclude:

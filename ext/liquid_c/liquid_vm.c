@@ -6,6 +6,7 @@
 #include "variable_lookup.h"
 #include "intutil.h"
 #include "document_body.h"
+#include "variable.h"
 
 ID id_render_node;
 ID id_vm;
@@ -16,6 +17,21 @@ static unsigned long context_generation = 1;
 static bool native_enabled;
 static ID id_render, id_render_to_output_buffer, id_render_obj_to_output, id_ruby_render;
 static ID id_each;
+static VALUE portable_renderer_methods[3];
+
+bool liquid_vm_render_methods_standard(void)
+{
+    if (!rb_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) ||
+        !rb_method_basic_definition_p(CLASS_OF(portable_renderer_methods[0]), rb_intern("=="))) return false;
+    size_t gc = rb_gc_count();
+    const char *names[] = { "render", "render_to_output_buffer", "render_obj_to_output" };
+    for (size_t i = 0; i < 3; i++) {
+        VALUE current = rb_funcall(cLiquidVariable, rb_intern("instance_method"), 1, ID2SYM(rb_intern(names[i])));
+        if (!rb_equal(current, portable_renderer_methods[i])) return false;
+    }
+    return gc == rb_gc_count();
+}
+
 
 static void vm_mark(void *ptr)
 {
@@ -281,6 +297,7 @@ typedef struct vm_render_until_error_args {
     const VALUE *nodelist;
     bool evaluate_variable;
     size_t max_variable_stack_size;
+    VALUE variable_node;
 } vm_render_until_error_args_t;
 
 static VALUE raise_invalid_integer(VALUE unused_arg, VALUE exc)
@@ -562,14 +579,25 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 ip += line_size + 4;
 
                 args->ip = ip;
+                VALUE node = constants[variable_index];
+                bool materialized_variable = variable_placeholder_p(node) && variable_placeholder_object_render_p(node);
+                if (variable_placeholder_p(node) && !materialized_variable && native_enabled &&
+                    *args->nodelist == Qundef && !variable_render_traced() && variable_render_methods_standard()) {
+                    args->variable_node = node;
+                    break;
+                }
+                bool custom_renderer = !variable_render_methods_standard();
+                if (variable_placeholder_p(node) && custom_renderer) variable_placeholder_use_object(node);
+                node = variable_materialize(node);
+                VALUE materialized = Qnil;
                 variable_render_args_t render_args = {
                     .vm = vm,
                     .frame = {
                         .previous = vm->variable_frame,
-                        .variable = constants[variable_index],
+                        .variable = node,
                         .instructions = ip,
                         .constants = constants,
-                        .nodelist = args->nodelist,
+                        .nodelist = materialized_variable || custom_renderer ? &materialized : args->nodelist,
                         .max_stack_size = args->max_variable_stack_size,
                     },
                     .output = output,
@@ -592,9 +620,15 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 vm_refresh_context(vm);
                 if (vm->context.global_filter != Qnil)
                     var_result = rb_funcall(vm->context.global_filter, id_call, 1, var_result);
-                write_obj(output, var_result);
+                if (RB_TYPE_P(var_result, T_ARRAY) || !variable_output_method_standard() ||
+                    !rb_method_basic_definition_p(CLASS_OF(output), rb_intern("<<"))) {
+                    if (!variable_render_methods_standard()) variable_placeholder_use_object(args->variable_node);
+                    VALUE variable = variable_materialize(args->variable_node);
+                    rb_funcall(variable, id_render_obj_to_output, 2, var_result, output);
+                } else write_obj(output, var_result);
                 args->ip = NULL; // mark the end of a rescue block, used by vm_render_rescue
                 vm_increment_write_score(vm, output);
+                if (RARRAY_LEN(vm->context.interrupts)) return false;
                 break;
             }
 
@@ -868,4 +902,10 @@ void liquid_define_vm(void)
     rb_define_singleton_method(cLiquidCVM, "invalidate_contexts", vm_invalidate_contexts, 0);
     rb_define_singleton_method(cLiquidCVM, "reset_context", vm_reset_context, 1);
     rb_global_variable(&cLiquidCVM);
+    const char *renderers[] = { "c_render", "c_render_to_output_buffer", "c_render_obj_to_output" };
+    for (size_t i = 0; i < 3; i++) {
+        portable_renderer_methods[i] = rb_funcall(cLiquidVariable, rb_intern("instance_method"), 1, ID2SYM(rb_intern(renderers[i])));
+        rb_global_variable(&portable_renderer_methods[i]);
+    }
+
 }

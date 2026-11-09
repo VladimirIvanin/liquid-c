@@ -253,11 +253,10 @@ static inline void vm_assembler_add_new_int_range(vm_assembler_t *code)
     vm_assembler_write_opcode(code, OP_NEW_INT_RANGE);
 }
 
-static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code, VALUE node_line_number, VALUE variable)
+static inline void vm_assembler_add_variable_metadata(vm_assembler_t *code, VALUE node_line_number, uint32_t variable_index)
 {
     bool compact = NIL_P(node_line_number) ||
         (RB_FIXNUM_P(node_line_number) && FIX2LONG(node_line_number) > 0 && FIX2LONG(node_line_number) < (1 << 24));
-    uint32_t variable_index = vm_assembler_write_ruby_constant(code, variable);
     uint32_t line = compact ? (NIL_P(node_line_number) ? 0 : FIX2UINT(node_line_number)) :
         vm_assembler_write_ruby_constant(code, node_line_number);
     size_t line_size = compact ? VM_VARIABLE_LINE_NUMBER_SIZE : 4;
@@ -266,6 +265,21 @@ static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code,
     if (compact) uint24_to_bytes(line, instructions + 1);
     else uint32_to_bytes(line, instructions + 1);
     uint32_to_bytes(variable_index, instructions + 1 + line_size);
+}
+
+static inline void vm_assembler_add_render_variable_rescue(vm_assembler_t *code, VALUE line, VALUE variable)
+{
+    vm_assembler_add_variable_metadata(code, line, vm_assembler_write_ruby_constant(code, variable));
+}
+
+static inline void vm_assembler_add_unique_variable(vm_assembler_t *code, VALUE line, VALUE variable)
+{
+    // A new private descriptor has no other references in this assembler.
+    // Its slot participates in marking and relocation, but needs no dedup key.
+    size_t index = c_buffer_size(&code->constants) / sizeof(VALUE);
+    if (index > UINT32_MAX) rb_raise(rb_eRangeError, "Too many bytecode constants");
+    c_buffer_write_ruby_value(&code->constants, variable);
+    vm_assembler_add_variable_metadata(code, line, (uint32_t)index);
 }
 
 #endif

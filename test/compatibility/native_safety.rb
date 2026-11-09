@@ -14,6 +14,7 @@ build = File.join(directory, "build")
 FileUtils.mkdir_p(build)
 steps = []
 run = lambda do |command, env, name, timeout = 180|
+  timeout *= 3 if mode == "valgrind"
   result = Compatibility::ProcessRunner.run(
     command,
     env: env,
@@ -45,17 +46,31 @@ if mode == "sanitizers"
   abort("ASan runtime not found") unless status.success? && File.file?(runtime)
   env.merge!(
     "LD_PRELOAD" => runtime,
-    "ASAN_OPTIONS" => "detect_leaks=0:handle_segv=0:use_sigaltstack=0",
-    "UBSAN_OPTIONS" => "halt_on_error=1",
+    "ASAN_OPTIONS" => ENV.fetch("ASAN_OPTIONS", "detect_leaks=0:handle_segv=0:use_sigaltstack=0"),
+    "UBSAN_OPTIONS" => ENV.fetch("UBSAN_OPTIONS", "halt_on_error=1"),
   )
 end
 Dir.chdir(root) do
   if mode != "allocations"
     tests = "require_relative 'test/unit/native_parser_test'; require_relative 'test/unit/native_tags_test'; " \
-      "require_relative 'test/unit/audit_regression_test'; require_relative 'test/unit/block_test'"
+      "require_relative 'test/unit/audit_regression_test'; require_relative 'test/unit/block_test'; " \
+      "require_relative 'test/unit/native_compiler_test'"
     command = [RbConfig.ruby, "-Ilib", "-Itest", "-e", tests]
     command.insert(1, "test/compatibility/memcheck.rb") if mode == "valgrind"
     run.call(command, env, "regressions", 300)
+  end
+  if mode != "allocations"
+    gc_modes = ["compaction"]
+    instrumented_ruby = RbConfig::CONFIG.fetch("CFLAGS", "").include?("-fsanitize=address")
+    gc_modes << "stress" if mode == "valgrind" || instrumented_ruby
+    if mode == "sanitizers" && !instrumented_ruby
+      puts "native-compiler-stress: requires an ASan-instrumented Ruby (conservative stack scanning)"
+    end
+    gc_modes.each do |gc_mode|
+      command = [RbConfig.ruby, "-Ilib", "test/native_compiler_gc.rb", gc_mode]
+      command.insert(1, "test/compatibility/memcheck.rb") if mode == "valgrind"
+      run.call(command, env, "native-compiler-#{gc_mode}", 300)
+    end
   end
   command = [RbConfig.ruby, "test/assembler_allocation_failure.rb"]
   command.insert(1, "test/compatibility/memcheck.rb") if mode == "valgrind"
