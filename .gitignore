@@ -13,3 +13,4 @@ instruments*.trace
 /docs/
 /.audit.Gemfile
 /.audit.Gemfile.lock
+/local-test/
