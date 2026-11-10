@@ -36,6 +36,8 @@ jobs:
   test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
+    env:
+      BUNDLE_VERSION: ${{ (matrix.ruby == '4.0' || contains(matrix.ruby, 'head')) && 'system' || 'lockfile' }}
     continue-on-error: ${{ matrix.allowed-failure }}
     timeout-minutes: 10
     strategy:

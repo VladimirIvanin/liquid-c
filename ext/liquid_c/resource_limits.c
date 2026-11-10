@@ -293,7 +293,7 @@ void resource_limits_increment_write_score(resource_limits_t *limits, VALUE outp
     if (NIL_P(last_capture) && !RTEST(limits->render_length_limit))
         return;
     VALUE captured;
-    if (RB_TYPE_P(output, T_STRING) && rb_method_basic_definition_p(CLASS_OF(output), rb_intern("bytesize"))) {
+    if (RB_TYPE_P(output, T_STRING) && liquid_method_basic_definition_p(CLASS_OF(output), rb_intern("bytesize"))) {
         captured = LONG2NUM(RSTRING_LEN(output));
     } else {
         captured = rb_funcall(output, rb_intern("bytesize"), 0);

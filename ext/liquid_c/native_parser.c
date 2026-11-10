@@ -139,16 +139,16 @@ static bool guard_roots_registered;
 
 static VALUE native_watchers_supported(VALUE self, VALUE vm)
 {
-    return rb_method_basic_definition_p(CLASS_OF(vm), rb_intern("stat")) &&
-        rb_method_basic_definition_p(rb_cModule, rb_intern("module_eval")) &&
-        rb_method_basic_definition_p(rb_cModule, rb_intern("instance_method")) &&
-        (RB_TYPE_P(native_unbound_class, T_CLASS) && rb_method_basic_definition_p(native_unbound_class, rb_intern("bind_call"))) &&
-        rb_method_basic_definition_p(rb_cProc, rb_intern("call")) ? Qtrue : Qfalse;
+    return liquid_method_basic_definition_p(CLASS_OF(vm), rb_intern("stat")) &&
+        liquid_method_basic_definition_p(rb_cModule, rb_intern("module_eval")) &&
+        liquid_method_basic_definition_p(rb_cModule, rb_intern("instance_method")) &&
+        (RB_TYPE_P(native_unbound_class, T_CLASS) && liquid_method_basic_definition_p(native_unbound_class, rb_intern("bind_call"))) &&
+        liquid_method_basic_definition_p(rb_cProc, rb_intern("call")) ? Qtrue : Qfalse;
 }
 
 static VALUE native_constant_epoch(void)
 {
-    if (NIL_P(constant_vm) || !rb_method_basic_definition_p(CLASS_OF(constant_vm), id_stat)) return Qundef;
+    if (NIL_P(constant_vm) || !liquid_method_basic_definition_p(CLASS_OF(constant_vm), id_stat)) return Qundef;
     return rb_funcall(constant_vm, id_stat, 1, ID2SYM(id_constant_invalidations));
 }
 
@@ -199,7 +199,7 @@ static VALUE native_register_guards(VALUE self, VALUE specifications, VALUE watc
         guard->receiver = NUM2INT(RARRAY_AREF(spec, 2));
         guard->constant = RTEST(RARRAY_AREF(spec, 3));
         guard->public_call = RTEST(RARRAY_AREF(spec, 6));
-        guard->builtin = !guard->constant && rb_method_basic_definition_p(guard->owner, guard->method);
+        guard->builtin = !guard->constant && liquid_method_basic_definition_p(guard->owner, guard->method);
         guard->snapshot = RARRAY_AREF(spec, 4);
         guard->entry = guard->constant ? RARRAY_AREF(spec, 5) :
             (VALUE)rb_callable_method_entry(guard->owner, guard->method);
@@ -216,7 +216,7 @@ static bool native_method_guard_current(native_method_guard_t *guard)
     if (!guard->entry) return false;
     if (guard->entry != current) {
         // MRI can recreate inherited entries for an unchanged core constructor.
-        if (!guard->builtin || !rb_method_basic_definition_p(guard->owner, guard->method)) return false;
+        if (!guard->builtin || !liquid_method_basic_definition_p(guard->owner, guard->method)) return false;
         guard->entry = current;
         if (guard->owner == rb_cInteger && guard->method == rb_intern("to_i")) integer_to_i_entry = current;
     }
@@ -265,10 +265,10 @@ static VALUE native_methods_compatible(VALUE self, VALUE context, VALUE variable
 static bool native_conversion_is_standard(VALUE value)
 {
     VALUE klass = CLASS_OF(value);
-    if (!rb_method_basic_definition_p(klass, rb_intern("respond_to?")) ||
-        !rb_method_basic_definition_p(klass, rb_intern("respond_to_missing?")) ||
+    if (!liquid_method_basic_definition_p(klass, rb_intern("respond_to?")) ||
+        !liquid_method_basic_definition_p(klass, rb_intern("respond_to_missing?")) ||
         rb_method_boundp(klass, id_evaluate, 0)) return false;
-    if (rb_method_basic_definition_p(klass, rb_intern("to_i"))) return true;
+    if (liquid_method_basic_definition_p(klass, rb_intern("to_i"))) return true;
 #ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
     return RB_INTEGER_TYPE_P(value) && integer_to_i_entry && integer_to_i_entry ==
         (VALUE)rb_callable_method_entry(CLASS_OF(value), rb_intern("to_i"));
@@ -571,7 +571,7 @@ static VALUE native_expression_probed(native_parser_t *p, const native_parser_t 
         VALUE text = native_slice(p, start, p->end);
         bool floating = memchr(RSTRING_PTR(text), '.', RSTRING_LEN(text)) != NULL;
         if (floating && RSTRING_LEN(text) > 64) return Qundef;
-        if (!floating && !rb_method_basic_definition_p(
+        if (!floating && !liquid_method_basic_definition_p(
             CLASS_OF(native_expression_class), rb_intern("Integer"))) return Qundef;
         VALUE value = floating ?
             DBL2NUM(rb_str_to_dbl(text, 1)) : rb_str_to_inum(text, 10, 1);
@@ -596,12 +596,12 @@ static VALUE native_expression_probed(native_parser_t *p, const native_parser_t 
         VALUE range;
         if (rb_obj_is_kind_of(first, cLiquidVariableLookup) || rb_obj_is_kind_of(first, cLiquidRangeLookup) ||
             rb_obj_is_kind_of(last, cLiquidVariableLookup) || rb_obj_is_kind_of(last, cLiquidRangeLookup)) {
-            if (!rb_method_basic_definition_p(CLASS_OF(first), rb_intern("respond_to?")) ||
-                !rb_method_basic_definition_p(CLASS_OF(last), rb_intern("respond_to?"))) return Qundef;
+            if (!liquid_method_basic_definition_p(CLASS_OF(first), rb_intern("respond_to?")) ||
+                !liquid_method_basic_definition_p(CLASS_OF(last), rb_intern("respond_to?"))) return Qundef;
             bool first_evaluates = rb_method_boundp(CLASS_OF(first), id_evaluate, 1);
             bool last_evaluates = rb_method_boundp(CLASS_OF(last), id_evaluate, 1);
             if (!first_evaluates && !last_evaluates) return Qundef;
-            if (!first_evaluates && !rb_method_basic_definition_p(CLASS_OF(first), rb_intern("respond_to_missing?"))) return Qundef;
+            if (!first_evaluates && !liquid_method_basic_definition_p(CLASS_OF(first), rb_intern("respond_to_missing?"))) return Qundef;
             range = rb_obj_alloc(cLiquidRangeLookup);
             rb_ivar_set(range, id_start, first);
             rb_ivar_set(range, id_end, last);
@@ -736,7 +736,7 @@ static VALUE native_condition_expression(native_parser_t *p)
         VALUE condition = native_condition_class;
         if (!rb_cvar_defined(condition, rb_intern("@@method_literals"))) return Qundef;
         literals = rb_cvar_get(condition, rb_intern("@@method_literals"));
-        if (!native_string_cache(literals) || !rb_method_basic_definition_p(rb_cHash, rb_intern("[]"))) return Qundef;
+        if (!native_string_cache(literals) || !liquid_method_basic_definition_p(rb_cHash, rb_intern("[]"))) return Qundef;
         VALUE default_proc = native_hash_property(literals, HASH_DEFAULT_PROC_READER);
         VALUE default_value = native_hash_property(literals, HASH_DEFAULT_READER);
         if (!NIL_P(default_proc) || !NIL_P(default_value)) return Qundef;
@@ -1071,26 +1071,26 @@ static VALUE native_variable_unpin(VALUE opaque)
 static bool native_payload_methods_standard(int operation)
 {
     for (size_t i = 0; i < primitive_guard_count; i++)
-        if (!rb_method_basic_definition_p(primitive_guards[i].owner, primitive_guards[i].method) ||
+        if (!liquid_method_basic_definition_p(primitive_guards[i].owner, primitive_guards[i].method) ||
             (primitive_guards[i].public_call && rb_method_boundp(primitive_guards[i].owner, primitive_guards[i].method, 3) != 1)) return false;
     VALUE constructors[] = { cLiquidVariableLookup, cLiquidRangeLookup, native_parser_class };
     for (size_t i = 0; i < sizeof(constructors) / sizeof(constructors[0]); i++) {
         VALUE owner = CLASS_OF(constructors[i]);
         if (!RB_TYPE_P(constructors[i], T_CLASS) ||
             rb_get_alloc_func(constructors[i]) != rb_get_alloc_func(rb_cObject) ||
-            !rb_method_basic_definition_p(owner, id_new_native) ||
-            !rb_method_basic_definition_p(owner, id_allocate_native)) return false;
+            !liquid_method_basic_definition_p(owner, id_new_native) ||
+            !liquid_method_basic_definition_p(owner, id_allocate_native)) return false;
     }
     if (operation == 1) {
         if (!RB_TYPE_P(native_condition_class, T_CLASS) ||
             rb_get_alloc_func(native_condition_class) != rb_get_alloc_func(rb_cObject)) return false;
         VALUE owner = CLASS_OF(native_condition_class);
-        if (!rb_method_basic_definition_p(owner, id_new_native) ||
-            !rb_method_basic_definition_p(owner, id_allocate_native)) return false;
+        if (!liquid_method_basic_definition_p(owner, id_new_native) ||
+            !liquid_method_basic_definition_p(owner, id_allocate_native)) return false;
     }
-    if (!rb_method_basic_definition_p(cLiquidVariableLookup, id_freeze_native) ||
-        !rb_method_basic_definition_p(cLiquidRangeLookup, id_freeze_native) ||
-        !rb_method_basic_definition_p(rb_cRange, id_freeze_native)) return false;
+    if (!liquid_method_basic_definition_p(cLiquidVariableLookup, id_freeze_native) ||
+        !liquid_method_basic_definition_p(cLiquidRangeLookup, id_freeze_native) ||
+        !liquid_method_basic_definition_p(rb_cRange, id_freeze_native)) return false;
     return true;
 }
 
@@ -1102,9 +1102,9 @@ static VALUE native_parse_payload(VALUE markup, VALUE cache, int operation, bool
     if (!checked_methods && !native_payload_methods_standard(operation)) return Qnil;
     if (rb_enc_str_coderange(markup) == ENC_CODERANGE_BROKEN) return Qnil;
     if (!checked_methods && !NIL_P(cache) && (!RB_TYPE_P(cache, T_HASH) ||
-        !rb_method_basic_definition_p(CLASS_OF(cache), rb_intern("[]")) ||
-        !rb_method_basic_definition_p(CLASS_OF(cache), rb_intern("[]=")) ||
-        !rb_method_basic_definition_p(CLASS_OF(cache), rb_intern("key?")))) return Qnil;
+        !liquid_method_basic_definition_p(CLASS_OF(cache), rb_intern("[]")) ||
+        !liquid_method_basic_definition_p(CLASS_OF(cache), rb_intern("[]=")) ||
+        !liquid_method_basic_definition_p(CLASS_OF(cache), rb_intern("key?")))) return Qnil;
     if (!NIL_P(cache) && !checked_cache && !native_string_cache(cache)) return Qnil;
     native_parser_t parser = { .cache = cache, .pending = Qnil, .operation = operation,
         .initial_gc_count = before_gc, .guarded = checked_methods };
@@ -1138,7 +1138,7 @@ static VALUE native_parse_expression(VALUE self, VALUE markup, VALUE cache) { re
 
 static int native_publish_entry(VALUE key, VALUE value, VALUE cache)
 {
-    if (rb_method_basic_definition_p(CLASS_OF(cache), rb_intern("[]="))) rb_hash_aset(cache, key, value);
+    if (liquid_method_basic_definition_p(CLASS_OF(cache), rb_intern("[]="))) rb_hash_aset(cache, key, value);
     else rb_funcall(cache, rb_intern("[]="), 2, key, value);
     return ST_CONTINUE;
 }
@@ -1335,8 +1335,8 @@ static VALUE native_case_candidate(VALUE self, VALUE markup, VALUE cache)
     }
     if (selectors < 16) return Qfalse;
     if (RTEST(cache)) {
-        if (CLASS_OF(cache) != rb_cHash || !rb_method_basic_definition_p(rb_cHash, rb_intern("key?")) ||
-            !rb_method_basic_definition_p(rb_cHash, rb_intern("[]"))) return Qfalse;
+        if (CLASS_OF(cache) != rb_cHash || !liquid_method_basic_definition_p(rb_cHash, rb_intern("key?")) ||
+            !liquid_method_basic_definition_p(rb_cHash, rb_intern("[]"))) return Qfalse;
         if (rb_hash_lookup2(cache, markup, Qundef) != Qundef) return Qfalse;
     }
     return Qtrue;
@@ -1578,7 +1578,7 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
         if (entry) rb_gc_register_mark_object(entry);
         rb_ary_push(compiler_guard_entries, entry);
         compiler_methods[i].control = RTEST(RARRAY_AREF(spec, 2));
-        compiler_methods[i].builtin = rb_method_basic_definition_p(owner, SYM2ID(RARRAY_AREF(spec, 1)));
+        compiler_methods[i].builtin = liquid_method_basic_definition_p(owner, SYM2ID(RARRAY_AREF(spec, 1)));
         compiler_methods[i].owner = owner;
         compiler_methods[i].entry = entry;
         ID method = SYM2ID(RARRAY_AREF(spec, 1));
@@ -1604,16 +1604,16 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
         rb_ary_push(renderer_guard_entries, entry);
     }
     compiler_ready = RTEST(enabled);
-    if (!rb_method_basic_definition_p(native_unbound_class, rb_intern("==")) ||
-        !rb_method_basic_definition_p(native_unbound_class, rb_intern("super_method")) ||
-        !rb_method_basic_definition_p(native_unbound_class, rb_intern("bind_call"))) compiler_ready = false;
+    if (!liquid_method_basic_definition_p(native_unbound_class, rb_intern("==")) ||
+        !liquid_method_basic_definition_p(native_unbound_class, rb_intern("super_method")) ||
+        !liquid_method_basic_definition_p(native_unbound_class, rb_intern("bind_call"))) compiler_ready = false;
     for (size_t i = 0; i < primitive_guard_count; i++) {
         VALUE owner = primitive_guards[i].owner;
         ID method = primitive_guards[i].method;
-        if (!rb_method_basic_definition_p(owner, method)) compiler_ready = false;
+        if (!liquid_method_basic_definition_p(owner, method)) compiler_ready = false;
         primitive_guards[i].entry = (VALUE)rb_callable_method_entry(owner, method);
     }
-    if (!NIL_P(constant_vm) && rb_method_basic_definition_p(CLASS_OF(constant_vm), id_stat))
+    if (!NIL_P(constant_vm) && liquid_method_basic_definition_p(CLASS_OF(constant_vm), id_stat))
         compiler_stat = rb_obj_method(constant_vm, ID2SYM(id_stat));
     return compiler_ready ? Qtrue : Qfalse;
 }
@@ -1622,8 +1622,8 @@ bool variable_render_methods_standard(void)
 {
     if (!compiler_registered) return false;
     if (!NIL_P(rejected_renderer_entries) && rejected_renderer_gc == rb_gc_count() &&
-        rb_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
-        rb_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
+        liquid_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
+        liquid_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
         bool unchanged = true;
         for (size_t i = 0; i < 3; i++)
             if (RARRAY_AREF(rejected_renderer_entries, i) != (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]))
@@ -1638,8 +1638,8 @@ bool variable_render_methods_standard(void)
         bool standard = liquid_vm_render_methods_standard();
         if (gc != rb_gc_count()) return false;
         if (!standard) {
-            if (rb_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
-                rb_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
+            if (liquid_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
+                liquid_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
                 for (size_t j = 0; j < 3; j++)
                     rb_ary_store(rejected_renderer_entries, (long)j, (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[j]));
                 rejected_renderer_gc = rb_gc_count();
@@ -1705,7 +1705,7 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
         ID method = compiler_methods[i].method;
         VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
         if (compiler_methods[i].entry != current_entry) {
-            if (!compiler_methods[i].builtin || !rb_method_basic_definition_p(owner, method)) return false;
+            if (!compiler_methods[i].builtin || !liquid_method_basic_definition_p(owner, method)) return false;
             compiler_methods[i].entry = current_entry;
         }
         if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
@@ -1720,15 +1720,15 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
         }
     }
     VALUE klass = CLASS_OF(cLiquidVariable);
-    if (!rb_method_basic_definition_p(klass, id_new_native) ||
-        !rb_method_basic_definition_p(klass, id_allocate_native) ||
+    if (!liquid_method_basic_definition_p(klass, id_new_native) ||
+        !liquid_method_basic_definition_p(klass, id_allocate_native) ||
         rb_get_alloc_func(cLiquidVariable) != rb_get_alloc_func(rb_cObject)) return false;
     for (size_t i = 0; i < primitive_guard_count; i++) {
         VALUE owner = primitive_guards[i].owner;
         ID method = primitive_guards[i].method;
         VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
         if (primitive_guards[i].entry != current_entry) {
-            if (!rb_method_basic_definition_p(owner, method)) return false;
+            if (!liquid_method_basic_definition_p(owner, method)) return false;
             primitive_guards[i].entry = current_entry;
         }
         if (primitive_guards[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
@@ -1760,7 +1760,7 @@ static bool native_control_methods_standard(void)
         ID method = compiler_methods[i].method;
         VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
         if (compiler_methods[i].entry != current_entry) {
-            if (!compiler_methods[i].builtin || !rb_method_basic_definition_p(owner, method)) return false;
+            if (!compiler_methods[i].builtin || !liquid_method_basic_definition_p(owner, method)) return false;
             compiler_methods[i].entry = current_entry;
         }
         if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
@@ -1798,8 +1798,8 @@ static VALUE native_fast_header(VALUE self, VALUE markup)
     size_t gc = rb_gc_count();
     if (!native_compiler_methods_standard(&args) || !native_control_methods_standard() || gc != rb_gc_count()) return Qundef;
     if (condition && (rb_get_alloc_func(native_condition_class) != rb_get_alloc_func(rb_cObject) ||
-        !rb_method_basic_definition_p(CLASS_OF(native_condition_class), id_new_native) ||
-        !rb_method_basic_definition_p(CLASS_OF(native_condition_class), id_allocate_native))) return Qundef;
+        !liquid_method_basic_definition_p(CLASS_OF(native_condition_class), id_new_native) ||
+        !liquid_method_basic_definition_p(CLASS_OF(native_condition_class), id_allocate_native))) return Qundef;
     VALUE cache = rb_ivar_get(context, id_cache_native);
     VALUE result = native_parse_payload(markup, RTEST(cache) ? cache : Qnil, condition ? 1 : 2, true, true, NULL);
     if (NIL_P(result) || gc != rb_gc_count() || ruby_vm_event_flags) return Qundef;
@@ -1914,13 +1914,13 @@ VALUE native_parse_assignment(variable_parse_args_t *args, VALUE klass, VALUE na
     ID last_match = rb_intern("last_match");
     if (!native_control_binding(native_assign_class, rb_intern("Variable"), cLiquidVariable) ||
         !native_control_binding(native_assign_class, rb_intern("Regexp"), rb_cRegexp) ||
-        !rb_method_basic_definition_p(CLASS_OF(rb_cRegexp), last_match) ||
+        !liquid_method_basic_definition_p(CLASS_OF(rb_cRegexp), last_match) ||
         rb_method_boundp(CLASS_OF(rb_cRegexp), last_match, 3) != 1) return Qundef;
     const char *optout = getenv("LIQUID_C_NATIVE_TAGS");
     if (optout && !strcmp(optout, "false")) return Qundef;
     if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) ||
         (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) != control_tag_new_entry ||
-        !rb_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qundef;
+        !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qundef;
     native_parser_t lhs = { .source = markup, .length = (size_t)RSTRING_LEN(markup) };
     native_next(&lhs);
     if (lhs.token != N_ID || native_word(&lhs, "contains") ||
@@ -1978,7 +1978,7 @@ VALUE native_parse_include(variable_parse_args_t *args, VALUE klass, VALUE name,
     if (optout && !strcmp(optout, "false")) return Qundef;
     if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) ||
         (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) != control_tag_new_entry ||
-        !rb_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qundef;
+        !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qundef;
     size_t gc = rb_gc_count();
     VALUE cache = args->guard->cache;
     VALUE parsed = native_parse_payload(markup, RTEST(cache) ? cache : Qnil, 4, true, true, args->guard);
@@ -1988,7 +1988,7 @@ VALUE native_parse_include(variable_parse_args_t *args, VALUE klass, VALUE name,
     }
     VALUE fields = RARRAY_AREF(parsed, 0);
     if (!RTEST(RARRAY_AREF(fields, 5)) &&
-        (!rb_method_basic_definition_p(rb_cFalseClass, rb_intern("==")) ||
+        (!liquid_method_basic_definition_p(rb_cFalseClass, rb_intern("==")) ||
         rb_method_boundp(rb_cFalseClass, rb_intern("=="), 3) != 1)) return Qundef;
     VALUE tag = rb_obj_alloc(klass);
     rb_ivar_set(tag, rb_intern("@tag_name"), name);
@@ -2019,10 +2019,10 @@ VALUE native_parse_capture(variable_parse_args_t *args, VALUE klass, VALUE name,
     if (optout && !strcmp(optout, "false")) return Qundef;
     if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) ||
         (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) != control_tag_new_entry ||
-        !rb_method_basic_definition_p(CLASS_OF(klass), id_allocate_native) ||
+        !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native) ||
         rb_get_alloc_func(compiler_body_class) != compiler_body_allocator ||
-        !rb_method_basic_definition_p(CLASS_OF(compiler_body_class), id_new_native) ||
-        !rb_method_basic_definition_p(CLASS_OF(compiler_body_class), id_allocate_native)) return Qundef;
+        !liquid_method_basic_definition_p(CLASS_OF(compiler_body_class), id_new_native) ||
+        !liquid_method_basic_definition_p(CLASS_OF(compiler_body_class), id_allocate_native)) return Qundef;
     native_parser_t parser = { .source = markup, .length = (size_t)RSTRING_LEN(markup) };
     native_next(&parser);
     if (parser.token != N_ID || native_word(&parser, "contains")) return Qundef;
@@ -2062,7 +2062,7 @@ VALUE native_registered_tag(variable_parse_args_t *args, VALUE environment, VALU
         tags = rb_ivar_get(environment, rb_intern("@tags"));
         size_t gc = rb_gc_count();
         if (CLASS_OF(tags) != rb_cHash || !native_string_cache(tags) ||
-            !rb_method_basic_definition_p(rb_cHash, rb_intern("default")) ||
+            !liquid_method_basic_definition_p(rb_cHash, rb_intern("default")) ||
             !NIL_P(native_hash_property(tags, HASH_DEFAULT_PROC_READER)) ||
             !NIL_P(native_hash_property(tags, HASH_DEFAULT_READER)) || gc != rb_gc_count()) return Qundef;
         guard->environment = environment;
@@ -2085,14 +2085,14 @@ VALUE native_control_header(variable_parse_args_t *args, VALUE markup, int kind,
         VALUE classes[] = { native_condition_class, control_else_class, native_if_class, native_unless_class, native_for_class };
         for (size_t i = 0; i < sizeof(classes) / sizeof(classes[0]); i++) {
             VALUE klass = classes[i];
-            bool original_new = i < 2 ? rb_method_basic_definition_p(CLASS_OF(klass), id_new_native) :
+            bool original_new = i < 2 ? liquid_method_basic_definition_p(CLASS_OF(klass), id_new_native) :
                 (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) == control_tag_new_entry;
             if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) || !original_new ||
-                !rb_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qnil;
+                !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qnil;
         }
         if (rb_get_alloc_func(compiler_body_class) != compiler_body_allocator ||
-            !rb_method_basic_definition_p(CLASS_OF(compiler_body_class), id_new_native) ||
-            !rb_method_basic_definition_p(CLASS_OF(compiler_body_class), id_allocate_native)) return Qnil;
+            !liquid_method_basic_definition_p(CLASS_OF(compiler_body_class), id_new_native) ||
+            !liquid_method_basic_definition_p(CLASS_OF(compiler_body_class), id_allocate_native)) return Qnil;
         args->guard->control_enabled = true;
     }
     if (!args->guard->control_enabled) return Qnil;
@@ -2325,11 +2325,11 @@ void liquid_define_native_parser(void)
 #ifndef HAVE_RB_AUTOLOAD_P
     rb_global_variable(&native_autoload_reader);
     ID autoload_query = rb_intern("autoload?"), module_instance_method = rb_intern("instance_method");
-    if (rb_method_basic_definition_p(CLASS_OF(rb_cModule), module_instance_method) &&
-        rb_method_basic_definition_p(rb_cModule, autoload_query)) {
+    if (liquid_method_basic_definition_p(CLASS_OF(rb_cModule), module_instance_method) &&
+        liquid_method_basic_definition_p(rb_cModule, autoload_query)) {
         VALUE unbound = rb_funcall(rb_cModule, module_instance_method, 1, ID2SYM(autoload_query));
         ID reader_bind_call = rb_intern("bind_call");
-        if (rb_method_basic_definition_p(CLASS_OF(unbound), reader_bind_call))
+        if (liquid_method_basic_definition_p(CLASS_OF(unbound), reader_bind_call))
             native_autoload_reader = rb_obj_method(unbound, ID2SYM(reader_bind_call));
         RB_GC_GUARD(unbound);
     }
@@ -2344,14 +2344,14 @@ void liquid_define_native_parser(void)
         rb_global_variable(&native_hash_readers[i]);
         native_hash_readers[i] = Qnil;
         ID property = rb_intern(properties[i]);
-        if (!rb_method_basic_definition_p(CLASS_OF(rb_cHash), instance_method) ||
-            !rb_method_basic_definition_p(rb_cHash, property)) continue;
+        if (!liquid_method_basic_definition_p(CLASS_OF(rb_cHash), instance_method) ||
+            !liquid_method_basic_definition_p(rb_cHash, property)) continue;
         VALUE unbound = rb_funcall(rb_cHash, instance_method, 1, ID2SYM(property));
         native_unbound_class = CLASS_OF(unbound);
-        if (!rb_method_basic_definition_p(native_unbound_class, bind_call)) continue;
+        if (!liquid_method_basic_definition_p(native_unbound_class, bind_call)) continue;
         VALUE reader = rb_obj_method(unbound, ID2SYM(bind_call));
-        if (rb_method_basic_definition_p(CLASS_OF(unbound), bind_call) &&
-            rb_method_basic_definition_p(rb_cHash, property)) native_hash_readers[i] = reader;
+        if (liquid_method_basic_definition_p(CLASS_OF(unbound), bind_call) &&
+            liquid_method_basic_definition_p(rb_cHash, property)) native_hash_readers[i] = reader;
         RB_GC_GUARD(unbound);
     }
     const char *strings[] = { "strip", "start_with?", "end_with?", "scan", "match", "to_f", "[]", "freeze", "=~", "<<", "==", "byteslice", "length", "dup", "initialize_copy", "initialize_dup", "hash", "eql?" };

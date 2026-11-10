@@ -5,6 +5,15 @@
 #include <ruby/encoding.h>
 #include <stdbool.h>
 
+#ifdef HAVE_RB_METHOD_BASIC_DEFINITION_P
+static inline bool liquid_method_basic_definition_p(VALUE klass, ID method)
+{
+    return rb_method_basic_definition_p(klass, method);
+}
+#else
+bool liquid_method_basic_definition_p(VALUE klass, ID method);
+#endif
+
 extern ID id_evaluate;
 extern ID id_to_liquid;
 extern ID id_to_s;

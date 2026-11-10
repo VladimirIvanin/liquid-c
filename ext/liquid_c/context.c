@@ -84,8 +84,8 @@ void context_maybe_raise_undefined_variable(VALUE self, VALUE key)
 static bool uses_builtin_hash_lookup(VALUE hash)
 {
     return RB_TYPE_P(hash, T_HASH) && RBASIC_CLASS(hash) == rb_cHash &&
-        rb_method_basic_definition_p(rb_cHash, id_aref) &&
-        rb_method_basic_definition_p(rb_cHash, id_has_key);
+        liquid_method_basic_definition_p(rb_cHash, id_aref) &&
+        liquid_method_basic_definition_p(rb_cHash, id_has_key);
 }
 
 static bool environments_find_variable(context_t *context, VALUE environments, VALUE key,

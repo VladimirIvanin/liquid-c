@@ -29,6 +29,40 @@ VALUE cLiquidArgumentError, cLiquidSyntaxError, cMemoryError;
 rb_encoding *utf8_encoding;
 int utf8_encoding_index;
 
+#ifndef HAVE_RB_METHOD_BASIC_DEFINITION_P
+static VALUE portable_instance_method, portable_source_location, portable_original_name;
+
+static VALUE portable_method_reader(VALUE owner, const char *name)
+{
+    VALUE method = rb_funcall(owner, rb_intern("instance_method"), 1, ID2SYM(rb_intern(name)));
+    VALUE reader = rb_obj_method(method, ID2SYM(rb_intern("bind_call")));
+    RB_GC_GUARD(method);
+    return reader;
+}
+
+static void portable_method_readers_init(void)
+{
+    rb_global_variable(&portable_instance_method);
+    rb_global_variable(&portable_source_location);
+    rb_global_variable(&portable_original_name);
+    portable_instance_method = portable_method_reader(rb_cModule, "instance_method");
+    VALUE unbound_class = rb_obj_class(rb_funcall(rb_cModule, rb_intern("instance_method"), 1, ID2SYM(rb_intern("autoload?"))));
+    portable_source_location = portable_method_reader(unbound_class, "source_location");
+    portable_original_name = portable_method_reader(unbound_class, "original_name");
+}
+
+bool liquid_method_basic_definition_p(VALUE klass, ID method)
+{
+    if (!rb_method_boundp(klass, method, 0)) return false;
+    VALUE args[] = { klass, ID2SYM(method) };
+    VALUE definition = rb_method_call(2, args, portable_instance_method);
+    VALUE location = rb_method_call(1, &definition, portable_source_location);
+    VALUE name = rb_method_call(1, &definition, portable_original_name);
+    RB_GC_GUARD(definition);
+    return NIL_P(location) && name == ID2SYM(method);
+}
+#endif
+
 __attribute__((noreturn)) void raise_non_utf8_encoding_error(VALUE string, const char *value_name)
 {
     rb_raise(rb_eEncCompatError, "non-UTF8 encoded %s (%"PRIsVALUE") not supported", value_name, rb_obj_encoding(string));
@@ -36,6 +70,9 @@ __attribute__((noreturn)) void raise_non_utf8_encoding_error(VALUE string, const
 
 RUBY_FUNC_EXPORTED void Init_liquid_c(void)
 {
+#ifndef HAVE_RB_METHOD_BASIC_DEFINITION_P
+    portable_method_readers_init();
+#endif
     id_evaluate = rb_intern("evaluate");
     id_to_liquid = rb_intern("to_liquid");
     id_to_s = rb_intern("to_s");

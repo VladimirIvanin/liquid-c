@@ -21,8 +21,8 @@ static VALUE portable_renderer_methods[3];
 
 bool liquid_vm_render_methods_standard(void)
 {
-    if (!rb_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) ||
-        !rb_method_basic_definition_p(CLASS_OF(portable_renderer_methods[0]), rb_intern("=="))) return false;
+    if (!liquid_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) ||
+        !liquid_method_basic_definition_p(CLASS_OF(portable_renderer_methods[0]), rb_intern("=="))) return false;
     size_t gc = rb_gc_count();
     const char *names[] = { "render", "render_to_output_buffer", "render_obj_to_output" };
     for (size_t i = 0; i < 3; i++) {
@@ -621,7 +621,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 if (vm->context.global_filter != Qnil)
                     var_result = rb_funcall(vm->context.global_filter, id_call, 1, var_result);
                 if (RB_TYPE_P(var_result, T_ARRAY) || !variable_output_method_standard() ||
-                    !rb_method_basic_definition_p(CLASS_OF(output), rb_intern("<<"))) {
+                    !liquid_method_basic_definition_p(CLASS_OF(output), rb_intern("<<"))) {
                     if (!variable_render_methods_standard()) variable_placeholder_use_object(args->variable_node);
                     VALUE variable = variable_materialize(args->variable_node);
                     rb_funcall(variable, id_render_obj_to_output, 2, var_result, output);
@@ -859,7 +859,7 @@ static VALUE variable_render_to_output_buffer(VALUE self, VALUE context, VALUE o
 static VALUE variable_render_obj_to_output(VALUE self, VALUE object, VALUE output)
 {
     if (!native_enabled || !RB_TYPE_P(output, T_STRING) ||
-        !rb_method_basic_definition_p(CLASS_OF(output), rb_intern("<<"))) {
+        !liquid_method_basic_definition_p(CLASS_OF(output), rb_intern("<<"))) {
         return rb_funcall(self, rb_intern("ruby_render_obj_to_output"), 2, object, output);
     }
     if (RB_TYPE_P(object, T_ARRAY)) {
