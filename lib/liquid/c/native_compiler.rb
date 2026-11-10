@@ -53,6 +53,14 @@ if Liquid::C.respond_to?(:native_register_compiler)
     Liquid::Block => [:initialize, :new_body, :parse_body, :block_name, :block_delimiter, :blank?],
     Liquid::Assign => [:initialize, :parse, :strict_parse, :strict2_parse, :lax_parse, :blank?],
     Liquid::Assign.singleton_class => [:parse],
+    Liquid::Capture => [
+      :initialize, :parse, :strict_parse, :strict2_parse, :lax_parse, :blank?, :unknown_tag, :raise_tag_never_closed,
+    ],
+    Liquid::Capture.singleton_class => [:parse],
+    Liquid::Include => [
+      :initialize, :parse, :strict_parse, :strict2_parse, :lax_parse, :blank?, :safe_parse_expression, :parse_context,
+    ],
+    Liquid::Include.singleton_class => [:parse],
     Liquid::If => [
       :initialize,
       :parse,
@@ -113,12 +121,18 @@ if Liquid::C.respond_to?(:native_register_compiler)
   switching = [:parse_with_selected_parser, :strict_parse_with_error_context, :strict2_parse_with_error_context]
   inherited = [:new_body, :parse_body, :block_name, :block_delimiter, :blank?, :parse_context, :line_number, :options]
   [Liquid::If, Liquid::Unless, Liquid::For].each { |klass| specifications[klass].concat(inherited + switching) }
+  specifications[Liquid::Include].concat(switching + [:line_number, :options])
+  specifications[Liquid::Capture].concat((inherited + switching).reject { |name| name == :blank? })
   specifications[Liquid::Assign].concat(switching)
   standard = Liquid::C::NativeParser::NATIVE_GUARDS
   standard &&= Liquid::Tag.method(:new).unbind == Class.instance_method(:new)
   control_owners = [
     Liquid::Assign,
     Liquid::Assign.singleton_class,
+    Liquid::Capture,
+    Liquid::Capture.singleton_class,
+    Liquid::Include,
+    Liquid::Include.singleton_class,
     Liquid::Tag,
     Liquid::Tag.singleton_class,
     Liquid::Block,
@@ -150,6 +164,12 @@ if Liquid::C.respond_to?(:native_register_compiler)
         Liquid::ParserSwitching
       elsif inherited.include?(name) && [Liquid::If, Liquid::Unless, Liquid::For].include?(owner)
         [:parse_context, :line_number, :options].include?(name) ? Liquid::Tag : Liquid::Block
+      elsif owner == Liquid::Include && [:blank?, :safe_parse_expression, :line_number, :options].include?(name)
+        Liquid::Tag
+      elsif owner == Liquid::Capture && [:parse, :unknown_tag, :raise_tag_never_closed].include?(name)
+        Liquid::Block
+      elsif owner == Liquid::Capture && inherited.include?(name) && name != :blank?
+        [:parse_context, :line_number, :options].include?(name) ? Liquid::Tag : Liquid::Block
       elsif owner == Liquid::Assign && name == :parse
         Liquid::Tag
       elsif owner == Liquid::Unless
@@ -163,6 +183,8 @@ if Liquid::C.respond_to?(:native_register_compiler)
         Liquid::Unless.singleton_class,
         Liquid::For.singleton_class,
         Liquid::Assign.singleton_class,
+        Liquid::Capture.singleton_class,
+        Liquid::Include.singleton_class,
       ].include?(owner)
         Liquid::Tag.singleton_class
       else
@@ -185,10 +207,13 @@ if Liquid::C.respond_to?(:native_register_compiler)
     end
   end
   constants = [
-    *[:Block, :Tag, :If, :For, :Unless, :Condition, :ElseCondition, :Environment, :Assign].map do |name|
+    *[
+      :Block, :Tag, :If, :For, :Unless, :Condition, :ElseCondition, :Environment, :Assign, :Capture, :Include,
+    ].map do |name|
       [Liquid, name]
     end,
     [Liquid::Assign, :Syntax],
+    [Liquid::Include, :FOR],
     [Liquid::Block, :MAX_DEPTH],
     [Liquid::If, :ELSE_TAG_NAMES],
     [Liquid::C, :BlockBody],
@@ -201,6 +226,8 @@ if Liquid::C.respond_to?(:native_register_compiler)
   end.freeze
   ancestor_prefixes = [
     [Liquid::Assign, [Liquid::Assign, Liquid::Tag]],
+    [Liquid::Capture, [Liquid::Capture, Liquid::Block, Liquid::Tag]],
+    [Liquid::Include, [Liquid::Tag::Disableable, Liquid::Include, Liquid::Tag]],
     [Liquid::If, [Liquid::If, Liquid::Block, Liquid::Tag]],
     [Liquid::Unless, [Liquid::Unless, Liquid::If, Liquid::Block, Liquid::Tag]],
     [Liquid::For, [Liquid::For, Liquid::Block, Liquid::Tag]],

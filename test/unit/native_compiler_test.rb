@@ -5,6 +5,329 @@ require "open3"
 require "rbconfig"
 
 class NativeCompilerTest < Minitest::Test
+  def test_capture_warn_skips_the_ruby_header_parser_and_keeps_whitespace
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~'RUBY')
+      GC.start
+      GC.disable
+      before = ObjectSpace.each_object(Liquid::Parser).count
+      template = parse("{% capture result %}  {{ value }}\n {% capture inner %} inside {% endcapture %}{{ inner }}{% endcapture %}{{ result }}")
+      check(before, ObjectSpace.each_object(Liquid::Parser).count)
+      check("  yes\n  inside ", template.render!("value" => "yes"))
+      capture = template.root.nodelist.first
+      check(Liquid::Capture, capture.class)
+      check("result", capture.to)
+      check(true, capture.blank?)
+      check(true, capture.instance_variable_get(:@body).frozen?)
+      check([], template.warnings)
+    RUBY
+  end
+
+  def test_capture_falls_back_for_invalid_headers_and_other_modes
+    isolated(<<~'RUBY')
+      ["name extra", "", "contains", "name?", "a.b", "123", " name\0"].each do |header|
+        source = "first\n{% capture #{header} %} text {% endcapture %}"
+        [:lax, :warn, :strict, :strict2].each do |mode|
+          observe = lambda do |disabled|
+            template = parse(source, error_mode: mode, disable_liquid_c_nodes: disabled)
+            node = template.root.nodelist.last
+            [template.render, node.to, template.warnings.map { |e| [e.class, e.message, e.line_number] }]
+          rescue Liquid::Error => error
+            [error.class, error.message, error.line_number]
+          end
+          check(observe.call(true), observe.call(false))
+        end
+      end
+    RUBY
+  end
+
+  def test_capture_observes_header_and_block_hooks
+    isolated(<<~'RUBY')
+      [:initialize, :strict2_parse, :parse, :new_body, :parse_body, :block_delimiter, :blank?].each do |name|
+        original = Liquid::Capture.instance_method(name)
+        calls = 0
+        Liquid::Capture.define_method(name) do |*args, &block|
+          calls += 1
+          original.bind_call(self, *args, &block)
+        end
+        check(" yes ", parse("{% capture c %} yes {% endcapture %}{{ c }}").render!)
+        raise "capture hook bypassed: #{name}" if calls.zero?
+        Liquid::Capture.send(:remove_method, name)
+        Liquid::Capture.define_method(name, original) if original.owner == Liquid::Capture
+      end
+    RUBY
+  end
+
+  def test_capture_continues_after_a_nested_ruby_tag_changes_hooks
+    isolated(<<~RUBY)
+      calls = []
+      original = Liquid::Capture.instance_method(:block_delimiter)
+      tag = Class.new(Liquid::Tag) do
+        define_method(:initialize) do |*args|
+          super(*args)
+          Liquid::Capture.define_method(:block_delimiter) do
+            calls << :delimiter
+            original.bind_call(self)
+          end
+          GC.start
+        end
+      end
+      Liquid::Environment.default.register_tag("change_capture", tag)
+      template = parse("{% capture c %}before{% change_capture %}after{% endcapture %}{{ c }}")
+      check("beforeafter", template.render!)
+      raise "new delimiter hook bypassed" if calls.empty?
+    RUBY
+  end
+
+  def test_capture_errors_restore_depth_and_allow_another_parse
+    isolated(<<~RUBY)
+      ["{% capture c %}", "{% capture c %}{% else %}{% endcapture %}",
+        "{% capture c %}{% endother %}", "{% capture c %}" * 101 + "{% endcapture %}" * 101].each do |source|
+        observe = lambda do |disabled|
+          context = Liquid::ParseContext.new(error_mode: :warn, line_numbers: true, disable_liquid_c_nodes: disabled)
+          begin
+            Liquid::Template.parse(source, context)
+          rescue Liquid::Error => error
+            [error.class, error.message, error.line_number, context.depth]
+          end
+        end
+        check(observe.call(true), observe.call(false))
+        check("ok", parse("{% capture c %}ok{% endcapture %}{{ c }}").render!)
+      end
+    RUBY
+  end
+
+  def test_include_warn_skips_the_ruby_parser_and_preserves_cache_identity
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~RUBY)
+      GC.start
+      GC.disable
+      before = ObjectSpace.each_object(Liquid::Parser).count
+      template = parse("{% include names[key] for items as entry, x: items, x: other, flag: true %}")
+      check(before, ObjectSpace.each_object(Liquid::Parser).count)
+      tag = template.root.nodelist.first
+      check(Liquid::Include, tag.class)
+      check(true, tag.for_loop?)
+      check("entry", tag.instance_variable_get(:@alias_name))
+      check(["x", "flag"], tag.attributes.keys)
+      cache = tag.send(:parse_context).instance_variable_get(:@expression_cache)
+      check(["key", "names[key]", "items", "other"], cache.keys)
+      raise "template cache identity lost" unless cache.fetch("names[key]").equal?(tag.template_name_expr)
+      raise "variable cache identity lost" unless cache.fetch("items").equal?(tag.variable_name_expr)
+      raise "attribute cache identity lost" unless cache.fetch("other").equal?(tag.attributes.fetch("x"))
+      check([], template.warnings)
+    RUBY
+  end
+
+  def test_include_headers_and_cache_match_the_ruby_path
+    isolated(<<~'RUBY')
+      headers = ["'item'", "'item',", "'item' with nil", "'item' with false as item", "name with obj as item, a: obj[key], b: (1..3), a: 2",
+        "name for values", "name as alias", "name a: nil b: false, c: empty, d: 'a b'",
+        "[key] with self.value", "names . first, n: 1.5", "'item',,", "'item' as contains",
+        "'item' a:", "'item' with", "'item' extra", "'item' | upcase", "", "contains"]
+      [:lax, :warn, :strict, :strict2].each do |mode|
+        headers.each do |header|
+          observe = lambda do |disabled|
+            context = Liquid::ParseContext.new(error_mode: mode, disable_liquid_c_nodes: disabled, line_numbers: true)
+            template = Liquid::Template.parse("first\n{% include #{header} %}", context)
+            tag = template.root.nodelist.last
+            snapshot = lambda do |value|
+              case value
+              when Liquid::VariableLookup then [:lookup, snapshot.call(value.name), value.lookups.map { |v| snapshot.call(v) }]
+              when Liquid::RangeLookup then [:range, snapshot.call(value.start_obj), snapshot.call(value.end_obj)]
+              when Range then [:range, value.begin, value.end]
+              else value
+              end
+            end
+            [snapshot.call(tag.template_name_expr), snapshot.call(tag.variable_name_expr), tag.for_loop?,
+              tag.instance_variable_get(:@alias_name), tag.attributes.map { |k, v| [k, snapshot.call(v)] },
+              tag.instance_variables.sort, context.instance_variable_get(:@expression_cache).keys,
+              template.warnings.map { |e| [e.class, e.message, e.line_number] }]
+          rescue Liquid::Error => error
+            [error.class, error.message, error.line_number]
+          end
+          check(observe.call(true), observe.call(false))
+        end
+      end
+    RUBY
+  end
+
+  def test_include_observes_parser_hooks_before_and_after_loading
+    [false, true].each do |before_load|
+      setup = <<~RUBY
+        require "liquid"
+        $include_calls = []
+        Liquid::Include.prepend(Module.new do
+          def strict2_parse(markup)
+            $include_calls << markup
+            super
+          end
+        end)
+      RUBY
+      body = <<~RUBY
+        template = parse("{% include 'item' %}")
+        check(["'item' "], $include_calls)
+        check(Liquid::Include, template.root.nodelist.first.class)
+      RUBY
+      before_load ? isolated(body, before: setup) : isolated(setup + body)
+    end
+  end
+
+  def test_include_runtime_disableable_and_partial_cache_are_preserved
+    isolated(<<~RUBY)
+      reads = []
+      file_system = Object.new
+      file_system.define_singleton_method(:read_template_file) do |name|
+        reads << name
+        "{{ entry }}:{{ x }};"
+      end
+      env = Liquid::Environment.build { |e| e.file_system = file_system }
+      template = parse("{% capture c %}{% include 'item' for items as entry, x: 'X' %}{% endcapture %}{{ c }}", environment: env)
+      registers = { file_system: file_system, cached_partials: {} }
+      2.times do
+        check("a:X;b:X;", template.render!({ "items" => ["a", "b"] }, registers: registers))
+      end
+      check(["item"], reads)
+      context = Liquid::Context.build(environment: env)
+      context.with_disabled_tags(["include"]) do
+        begin
+          template.render(context)
+          raise "disabled include was rendered"
+        rescue Liquid::DisabledError
+          check(["item"], reads)
+        end
+      end
+    RUBY
+  end
+
+  def test_capture_and_include_tracepoint_observes_the_original_constructors
+    isolated(<<~RUBY)
+      calls = []
+      trace = TracePoint.new(:call) do |event|
+        calls << event.defined_class if event.method_id == :initialize
+      end
+      template = trace.enable { parse("{% capture c %}{% include 'item' %}{% endcapture %}") }
+      raise "capture constructor was hidden" unless calls.include?(Liquid::Capture)
+      raise "include constructor was hidden" unless calls.include?(Liquid::Include)
+      check(Liquid::Capture, template.root.nodelist.first.class)
+    RUBY
+  end
+
+  def test_capture_and_include_constructor_and_parse_overrides_are_observed
+    isolated(<<~'RUBY')
+      [[Liquid::Capture, "{% capture c %}x{% endcapture %}"], [Liquid::Include, "{% include 'item' %}"]].each do |klass, source|
+        [:new, :parse].each do |name|
+          original = klass.method(name)
+          calls = 0
+          klass.define_singleton_method(name) do |*args|
+            calls += 1
+            original.call(*args)
+          end
+          parse(source)
+          raise "constructor hook bypassed: #{klass}.#{name}" if calls.zero?
+          klass.singleton_class.send(:remove_method, name)
+        end
+      end
+    RUBY
+  end
+
+  def test_capture_constructor_hook_installed_before_loading_is_observed
+    isolated(<<~RUBY, before: <<~BEFORE)
+      check("ok", parse("{% capture c %}ok{% endcapture %}{{ c }}").render!)
+      check(["capture"], $capture_calls)
+    RUBY
+      require "liquid"
+      $capture_calls = []
+      Liquid::Capture.prepend(Module.new do
+        def initialize(*args)
+          $capture_calls << args.first
+          super
+        end
+      end)
+    BEFORE
+  end
+
+  def test_capture_and_include_revalidate_after_same_size_cache_key_replacement
+    isolated(<<~RUBY)
+      tag = Class.new(Liquid::Tag) do
+        define_method(:initialize) do |*args|
+          super(*args)
+          cache = parse_context.instance_variable_get(:@expression_cache)
+          size = cache.size
+          cache.delete("first")
+          cache[:foreign] = 1
+          raise "cache size changed" unless size == cache.size
+        end
+      end
+      env = Liquid::Environment.build { |e| e.register_tag("replace_key", tag) }
+      source = "{{ first }}{% replace_key %}{% capture c %}{{ second }}{% endcapture %}" \
+        "{% include 'item', x: second %}"
+      [true, false].each do |disabled|
+        template = parse(source, environment: env, disable_liquid_c_nodes: disabled)
+        include_tag = template.root.nodelist.last
+        capture = template.root.nodelist.grep(Liquid::Capture).first
+        raise "shared expression identity lost" unless include_tag.attributes.fetch("x").equal?(capture.nodelist.first.name)
+      end
+    RUBY
+  end
+
+  def test_inherited_expression_constructors_keep_native_tags_after_entry_refresh
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~RUBY)
+      Class.class_eval do
+        private :new
+        public :new
+      end
+      [Liquid::VariableLookup, Liquid::RangeLookup, Liquid::Parser].each do |klass|
+        klass.singleton_class.class_eval do
+          alias_method :new, :new
+          remove_method :new
+        end
+      end
+      GC.start
+      GC.compact if GC.respond_to?(:compact)
+      GC.disable
+      before = ObjectSpace.each_object(Liquid::Parser).count
+      template = parse("{% capture c %}{{ item.name }}{% include 'item', x: item.name %}{% endcapture %}")
+      check(before, ObjectSpace.each_object(Liquid::Parser).count)
+      check(Liquid::Capture, template.root.nodelist.first.class)
+    RUBY
+  end
+
+  def test_expression_constructor_overrides_still_disable_native_tags
+    isolated(<<~'RUBY')
+      [Liquid::VariableLookup, Liquid::Parser].each do |klass|
+        original = klass.method(:new)
+        calls = 0
+        klass.define_singleton_method(:new) do |*args, **kwargs|
+          calls += 1
+          original.call(*args, **kwargs)
+        end
+        template = parse("{% capture c %}{{ item.name }}{% endcapture %}{{ c }}")
+        check("ok", template.render!("item" => { "name" => "ok" }))
+        raise "expression constructor override was bypassed: #{klass}" if calls.zero?
+        klass.singleton_class.send(:remove_method, :new)
+      end
+    RUBY
+  end
+
+  def test_include_observes_false_equality_when_the_binding_is_absent
+    isolated(<<~RUBY)
+      original = FalseClass.instance_method(:==)
+      calls = []
+      FalseClass.define_method(:==) do |other|
+        calls << other
+        original.bind_call(self, other)
+      end
+      template = parse("{% include 'item' %}")
+      raise "include equality hook bypassed" unless calls.include?("for")
+      check(false, template.root.nodelist.first.for_loop?)
+    RUBY
+  end
+
   def test_renderer_hook_survives_compaction_and_restoration
     isolated(<<~RUBY)
       original = Liquid::Variable.instance_method(:render)

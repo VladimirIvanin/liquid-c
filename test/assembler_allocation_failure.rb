@@ -26,7 +26,8 @@ abort "test allocation hooks are absent" unless Liquid::C.respond_to?(:test_fail
 end
 raise "failed to recover" unless Liquid::Template.parse("{{ value }}").render!("value" => "ok") == "ok"
 
-source = "{% if value %}{{ value | append: '!' }}{% else %}empty{% endif %}" * 8
+source = "{% capture result %}{% if value %}{{ value | append: '!' }}" \
+  "{% else %}empty{% endif %}{% endcapture %}{{ result }}" * 8
 failures = 0
 128.times do |after|
   Liquid::C.test_fail_assembler_allocation(after)

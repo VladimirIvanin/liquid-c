@@ -336,10 +336,13 @@ static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body
                 }
                 if (body->as.intermediate.blank) {
                     VALUE blank;
-                    if (variable_guard->valid && (native_control_kind(CLASS_OF(new_tag)) || native_assignment_class_p(CLASS_OF(new_tag))) &&
-                        native_control_guard(&args))
-                        blank = native_assignment_class_p(CLASS_OF(new_tag)) ? Qtrue : rb_ivar_get(new_tag, rb_intern("@blank"));
-                    else {
+                    if (variable_guard->valid && (native_control_kind(CLASS_OF(new_tag)) || native_assignment_class_p(CLASS_OF(new_tag)) ||
+                        native_include_class_p(CLASS_OF(new_tag))) &&
+                        native_control_guard(&args)) {
+                        if (native_include_class_p(CLASS_OF(new_tag))) blank = Qfalse;
+                        else if (native_assignment_class_p(CLASS_OF(new_tag)) || native_control_kind(CLASS_OF(new_tag)) == 3) blank = Qtrue;
+                        else blank = rb_ivar_get(new_tag, rb_intern("@blank"));
+                    } else {
                         variable_guard->valid = false;
                         blank = rb_funcall(new_tag, intern_is_blank, 0);
                     }
@@ -559,7 +562,7 @@ static VALUE control_complete_segment(VALUE opaque)
     bool is_else = RB_TYPE_P(name, T_STRING) && RSTRING_LEN(name) == 4 && !memcmp(RSTRING_PTR(name), "else", 4);
     bool is_elsif = RB_TYPE_P(name, T_STRING) && RSTRING_LEN(name) == 5 && !memcmp(RSTRING_PTR(name), "elsif", 5);
     int kind = native_control_kind(CLASS_OF(tag));
-    if ((is_else || (kind == 1 && is_elsif)) && (native_control_kind(CLASS_OF(tag)) && CLASS_OF(body_obj) == native_block_body_class && native_control_guard(args))) {
+    if (((kind == 1 && (is_else || is_elsif)) || (kind == 2 && is_else)) && (native_control_kind(CLASS_OF(tag)) && CLASS_OF(body_obj) == native_block_body_class && native_control_guard(args))) {
         if (kind == 2) {
             rb_ivar_set(tag, rb_intern("@else_block"), control_new_body(tag, args));
             return Qtrue;
@@ -589,9 +592,23 @@ ruby_unknown:
 static VALUE control_try_parse(VALUE klass, VALUE name, VALUE markup, variable_parse_args_t *args, parse_context_t *context)
 {
     if (native_assignment_class_p(klass)) return native_parse_assignment(args, klass, name, markup);
+    if (native_include_class_p(klass)) return native_parse_include(args, klass, name, markup);
     int kind = native_control_kind(klass);
     if (!kind) return Qundef;
     VALUE line = rb_ivar_get(args->parse_context, id_ivar_line_number);
+    if (kind == 3) {
+        VALUE tag = native_parse_capture(args, klass, name, markup);
+        if (tag == Qundef) return Qundef;
+        VALUE body = control_new_body(tag, args);
+        rb_ivar_set(tag, rb_intern("@body"), body);
+        while (control_parse_segment(tag, body, args, context)) {
+            body = rb_ivar_get(tag, rb_intern("@body"));
+        }
+        native_control_finish(args, tag, kind);
+        if (args->guard->gc_count != rb_gc_count()) args->guard->valid = false;
+        RB_GC_GUARD(body);
+        return tag;
+    }
     VALUE header = native_control_header(args, markup, kind, false);
     if (NIL_P(header)) return Qundef;
     size_t header_gc = rb_gc_count();

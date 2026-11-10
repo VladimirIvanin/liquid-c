@@ -33,6 +33,9 @@ VALUE variable_placeholder_new(VALUE source, size_t offset, size_t length, VALUE
 void variable_placeholder_set(VALUE self, VALUE name, VALUE filters);
 VALUE variable_materialize(VALUE node);
 VALUE variable_from_parse(VALUE markup, VALUE context, VALUE line, VALUE name, VALUE filters);
+bool native_include_class_p(VALUE klass);
+VALUE native_parse_include(variable_parse_args_t *args, VALUE klass, VALUE name, VALUE markup);
+VALUE native_parse_capture(variable_parse_args_t *args, VALUE klass, VALUE name, VALUE markup);
 bool native_assignment_class_p(VALUE klass);
 VALUE native_parse_assignment(variable_parse_args_t *args, VALUE klass, VALUE name, VALUE markup);
 bool variable_placeholder_p(VALUE node);
