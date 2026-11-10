@@ -62,6 +62,9 @@ not prevent it from enabling YJIT again.
 
 Local results measured across 2026-11-10–11 (Europe/Moscow):
 
+`i/s` means benchmark iterations per second; each iteration processes the
+entire ThemeRunner corpus for the listed operation. **Higher is better.**
+
 | Operation | Plain Liquid (i/s) | Liquid C (i/s) |
 | --- | ---: | ---: |
 | tokenize | 392.897 (±14.0%) | 444.975 (±10.3%) |
@@ -80,6 +83,9 @@ bundle exec rake compare:lax
 
 The upstream Liquid benchmark enables YJIT in both processes. Local results
 measured on 2026-11-10:
+
+`i/s` means benchmark iterations per second; each iteration processes the
+entire ThemeRunner corpus for the listed operation. **Higher is better.**
 
 | Operation | Plain Liquid (i/s) | Liquid C (i/s) |
 | --- | ---: | ---: |
