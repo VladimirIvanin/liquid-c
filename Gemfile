@@ -25,4 +25,5 @@ end
 
 group :development do
   gem "byebug"
+  gem "vernier", "~> 1.12", require: false
 end
