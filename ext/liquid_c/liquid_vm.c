@@ -23,13 +23,13 @@ bool liquid_vm_render_methods_standard(void)
 {
     if (!liquid_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) ||
         !liquid_method_basic_definition_p(CLASS_OF(portable_renderer_methods[0]), rb_intern("=="))) return false;
-    size_t gc = rb_gc_count();
+    size_t gc = liquid_gc_count();
     const char *names[] = { "render", "render_to_output_buffer", "render_obj_to_output" };
     for (size_t i = 0; i < 3; i++) {
         VALUE current = rb_funcall(cLiquidVariable, rb_intern("instance_method"), 1, ID2SYM(rb_intern(names[i])));
         if (!rb_equal(current, portable_renderer_methods[i])) return false;
     }
-    return gc == rb_gc_count();
+    return gc == liquid_gc_count();
 }
 
 
@@ -146,7 +146,7 @@ static VALUE write_array_element(RB_BLOCK_CALL_FUNC_ARGLIST(value, uncast_args))
 
 static VALUE write_array(VALUE array, VALUE uncast_args, int recursive)
 {
-    if (recursive || ruby_stack_check()) {
+    if (recursive || liquid_stack_check()) {
         rb_raise(rb_eSysStackError, "stack level too deep");
     }
     return rb_block_call(array, id_each, 0, NULL, write_array_element, uncast_args);

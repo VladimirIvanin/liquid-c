@@ -114,7 +114,7 @@ static VALUE block_body_initialize(VALUE self, VALUE parse_context)
 static VALUE block_body_initialize_copy(VALUE self, VALUE other)
 {
     if (self == other) return self;
-    rb_obj_init_copy(self, other);
+    liquid_obj_init_copy(self, other);
     block_body_t *body, *original;
     BlockBody_Get_Struct(self, body);
     BlockBody_Get_Struct(other, original);
@@ -176,7 +176,7 @@ static VALUE restore_liquid_tokenizer(VALUE opaque)
 
 static tag_markup_t internal_block_body_parse(VALUE body_obj, block_body_t *body, parse_context_t *parse_context)
 {
-    if (ruby_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
+    if (liquid_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
     tokenizer_t *tokenizer = parse_context->tokenizer;
     token_t token;
     tag_markup_t unknown_tag = { Qnil, Qnil };
@@ -450,15 +450,15 @@ typedef struct {
 
 static bool control_interval_current(variable_parse_args_t *args)
 {
-    return args->guard->valid && args->guard->control_validated && args->guard->gc_count == rb_gc_count() && native_control_guard(args);
+    return args->guard->valid && args->guard->control_validated && args->guard->gc_count == liquid_gc_count() && native_control_guard(args);
 }
 
 static VALUE control_new_body(VALUE tag, variable_parse_args_t *args)
 {
     if (native_control_kind(CLASS_OF(tag)) && control_interval_current(args)) {
-        size_t gc = rb_gc_count();
+        size_t gc = liquid_gc_count();
         VALUE body = block_body_allocate(native_block_body_class);
-        if (gc == rb_gc_count()) block_body_initialize(body, args->parse_context);
+        if (gc == liquid_gc_count()) block_body_initialize(body, args->parse_context);
         else {
             args->guard->valid = false;
             rb_funcall(body, rb_intern("initialize"), 1, args->parse_context);
@@ -605,15 +605,15 @@ static VALUE control_try_parse(VALUE klass, VALUE name, VALUE markup, variable_p
             body = rb_ivar_get(tag, rb_intern("@body"));
         }
         native_control_finish(args, tag, kind);
-        if (args->guard->gc_count != rb_gc_count()) args->guard->valid = false;
+        if (args->guard->gc_count != liquid_gc_count()) args->guard->valid = false;
         RB_GC_GUARD(body);
         return tag;
     }
     VALUE header = native_control_header(args, markup, kind, false);
     if (NIL_P(header)) return Qundef;
-    size_t header_gc = rb_gc_count();
+    size_t header_gc = liquid_gc_count();
     VALUE tag = rb_obj_alloc(klass);
-    if (header_gc != rb_gc_count()) {
+    if (header_gc != liquid_gc_count()) {
         args->guard->valid = false;
         rb_funcall(tag, rb_intern("initialize"), 3, name, markup, args->parse_context);
         rb_funcallv_public(tag, intern_parse, 1, &context->tokenizer_obj);
@@ -635,7 +635,7 @@ static VALUE control_try_parse(VALUE klass, VALUE name, VALUE markup, variable_p
         rb_ivar_set(tag, rb_intern("@limit"), Qnil);
         native_control_for_fields(tag, payload);
     }
-    if (header_gc != rb_gc_count()) {
+    if (header_gc != liquid_gc_count()) {
         args->guard->valid = false;
         rb_funcall(tag, rb_intern("initialize"), 3, name, markup, args->parse_context);
         rb_funcallv_public(tag, intern_parse, 1, &context->tokenizer_obj);
@@ -682,7 +682,7 @@ static VALUE control_try_parse(VALUE klass, VALUE name, VALUE markup, variable_p
     }
     if (!ordinary) args->guard->valid = false;
     native_control_finish(args, tag, kind);
-    if (args->guard->gc_count != rb_gc_count()) args->guard->valid = false;
+    if (args->guard->gc_count != liquid_gc_count()) args->guard->valid = false;
     RB_GC_GUARD(header);
     RB_GC_GUARD(body);
     return tag;

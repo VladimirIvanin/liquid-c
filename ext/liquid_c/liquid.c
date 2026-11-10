@@ -35,7 +35,7 @@ static VALUE portable_instance_method, portable_source_location, portable_origin
 static VALUE portable_method_reader(VALUE owner, const char *name)
 {
     VALUE method = rb_funcall(owner, rb_intern("instance_method"), 1, ID2SYM(rb_intern(name)));
-    VALUE reader = rb_obj_method(method, ID2SYM(rb_intern("bind_call")));
+    VALUE reader = liquid_method_handle(rb_obj_method(method, ID2SYM(rb_intern("bind_call"))));
     RB_GC_GUARD(method);
     return reader;
 }
@@ -55,11 +55,54 @@ bool liquid_method_basic_definition_p(VALUE klass, ID method)
 {
     if (!rb_method_boundp(klass, method, 0)) return false;
     VALUE args[] = { klass, ID2SYM(method) };
-    VALUE definition = rb_method_call(2, args, portable_instance_method);
-    VALUE location = rb_method_call(1, &definition, portable_source_location);
-    VALUE name = rb_method_call(1, &definition, portable_original_name);
+    VALUE definition = liquid_method_call(2, args, portable_instance_method);
+    VALUE location = liquid_method_call(1, &definition, portable_source_location);
+    VALUE name = liquid_method_call(1, &definition, portable_original_name);
+    bool builtin = NIL_P(location);
+    if (RB_TYPE_P(location, T_ARRAY) && RARRAY_LEN(location)) {
+        VALUE source = RARRAY_AREF(location, 0);
+        const char prefix[] = "<internal:core> ";
+        builtin = RB_TYPE_P(source, T_STRING) && RSTRING_LEN(source) >= (long)(sizeof(prefix) - 1) &&
+            !memcmp(RSTRING_PTR(source), prefix, sizeof(prefix) - 1);
+    }
     RB_GC_GUARD(definition);
-    return NIL_P(location) && name == ID2SYM(method);
+    RB_GC_GUARD(location);
+    return builtin && name == ID2SYM(method);
+}
+#endif
+
+#ifndef HAVE_RB_GC_COUNT
+static VALUE portable_gc_count;
+
+size_t liquid_gc_count(void)
+{
+    return NUM2SIZET(liquid_method_call(0, NULL, portable_gc_count));
+}
+#endif
+
+#ifndef HAVE_RUBY_STACK_CHECK
+#include <pthread.h>
+static _Thread_local uintptr_t portable_stack_bottom;
+
+bool liquid_stack_check(void)
+{
+    char marker;
+    if (!portable_stack_bottom) {
+#ifdef HAVE_PTHREAD_GETATTR_NP
+        pthread_attr_t attributes;
+        void *base;
+        size_t size;
+        if (pthread_getattr_np(pthread_self(), &attributes))
+            rb_raise(rb_eRuntimeError, "cannot read native stack bounds");
+        int error = pthread_attr_getstack(&attributes, &base, &size);
+        pthread_attr_destroy(&attributes);
+        if (error) rb_raise(rb_eRuntimeError, "cannot read native stack bounds");
+        portable_stack_bottom = (uintptr_t)base;
+#else
+        portable_stack_bottom = (uintptr_t)pthread_get_stackaddr_np(pthread_self()) - pthread_get_stacksize_np(pthread_self());
+#endif
+    }
+    return (uintptr_t)&marker < portable_stack_bottom + 128 * 1024;
 }
 #endif
 
@@ -70,6 +113,10 @@ __attribute__((noreturn)) void raise_non_utf8_encoding_error(VALUE string, const
 
 RUBY_FUNC_EXPORTED void Init_liquid_c(void)
 {
+#ifndef HAVE_RB_GC_COUNT
+    rb_global_variable(&portable_gc_count);
+    portable_gc_count = liquid_method_handle(rb_obj_method(rb_mGC, ID2SYM(rb_intern("count"))));
+#endif
 #ifndef HAVE_RB_METHOD_BASIC_DEFINITION_P
     portable_method_readers_init();
 #endif
@@ -131,4 +178,3 @@ RUBY_FUNC_EXPORTED void Init_liquid_c(void)
     liquid_define_vm();
     liquid_define_usage();
 }
-

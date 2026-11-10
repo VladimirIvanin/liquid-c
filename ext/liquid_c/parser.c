@@ -55,7 +55,7 @@ static VALUE parse_number(parser_t *p)
 
     VALUE string = token_to_rstr(token);
     if (token.flags & TOKEN_FLOAT_NUMBER) {
-        out = DBL2NUM(rb_str_to_dbl(string, 1));
+        out = DBL2NUM(liquid_str_to_dbl(string, 1));
     } else {
         out = rb_str_to_inum(string, 10, 1);
     }
@@ -69,7 +69,7 @@ __attribute__((noreturn)) static void raise_invalid_expression_type(const char *
 
 static VALUE try_parse_constant_range(parser_t *p)
 {
-    if (ruby_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
+    if (liquid_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
     parser_t saved_state = *p;
 
     parser_must_consume(p, TOKEN_OPEN_ROUND);
@@ -231,7 +231,7 @@ static void parse_and_compile_number(parser_t *p, vm_assembler_t *code)
 
 void parse_and_compile_expression(parser_t *p, vm_assembler_t *code)
 {
-    if (ruby_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
+    if (liquid_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
     switch (p->cur.type) {
         case TOKEN_IDENTIFIER:
         {

@@ -14,6 +14,75 @@ static inline bool liquid_method_basic_definition_p(VALUE klass, ID method)
 bool liquid_method_basic_definition_p(VALUE klass, ID method);
 #endif
 
+static inline VALUE liquid_method_handle(VALUE method)
+{
+#ifdef HAVE_RB_METHOD_CALL
+    return method;
+#else
+    return rb_funcall(method, rb_intern("to_proc"), 0);
+#endif
+}
+
+static inline VALUE liquid_method_call(int argc, const VALUE *argv, VALUE method)
+{
+#ifdef HAVE_RB_METHOD_CALL
+    return rb_method_call(argc, argv, method);
+#else
+    return rb_proc_call(method, rb_ary_new_from_values(argc, argv));
+#endif
+}
+
+#ifdef HAVE_RB_GC_COUNT
+static inline size_t liquid_gc_count(void) { return rb_gc_count(); }
+#else
+size_t liquid_gc_count(void);
+#endif
+
+#ifdef HAVE_RUBY_STACK_CHECK
+static inline bool liquid_stack_check(void) { return ruby_stack_check(); }
+#else
+bool liquid_stack_check(void);
+#endif
+
+static inline VALUE liquid_big_lshift(VALUE value, VALUE shift)
+{
+#ifdef HAVE_RB_BIG_LSHIFT
+    return rb_big_lshift(value, shift);
+#else
+    return rb_funcall(value, rb_intern("<<"), 1, shift);
+#endif
+}
+
+static inline VALUE liquid_big_or(VALUE value, VALUE mask)
+{
+#ifdef HAVE_RB_BIG_OR
+    return rb_big_or(value, mask);
+#else
+    return rb_funcall(value, rb_intern("|"), 1, mask);
+#endif
+}
+
+static inline double liquid_str_to_dbl(VALUE string, int strict)
+{
+#ifdef HAVE_RB_STR_TO_DBL
+    return rb_str_to_dbl(string, strict);
+#else
+    return rb_cstr_to_dbl(StringValueCStr(string), strict);
+#endif
+}
+
+static inline VALUE liquid_obj_init_copy(VALUE self, VALUE other)
+{
+#ifdef HAVE_RB_OBJ_INIT_COPY
+    return rb_obj_init_copy(self, other);
+#else
+    rb_check_frozen(self);
+    if (TYPE(self) != TYPE(other) || rb_obj_class(self) != rb_obj_class(other))
+        rb_raise(rb_eTypeError, "initialize_copy should take same class object");
+    return self;
+#endif
+}
+
 extern ID id_evaluate;
 extern ID id_to_liquid;
 extern ID id_to_s;
@@ -41,4 +110,3 @@ static inline void check_utf8_encoding(VALUE string, const char *string_name)
 #endif
 
 #endif
-
