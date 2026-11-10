@@ -5,6 +5,103 @@ require "open3"
 require "rbconfig"
 
 class NativeCompilerTest < Minitest::Test
+  def test_renderer_hook_survives_compaction_and_restoration
+    isolated(<<~RUBY)
+      original = Liquid::Variable.instance_method(:render)
+      Liquid::Variable.define_method(:render) do |context|
+        original.bind_call(self, context).to_s + "!"
+      end
+      source = "{{ value }}{% if value %}{{ value }}{% endif %}"
+      check("first!first!", parse(source).render!("value" => "first"))
+      3.times do
+        GC.start
+        GC.compact if GC.respond_to?(:compact)
+        check("after!after!", parse(source).render!("value" => "after"))
+      end
+      Liquid::Variable.define_method(:render, original)
+      check("restoredrestored", parse(source).render!("value" => "restored"))
+    RUBY
+  end
+
+  def test_actual_condition_constructor_override_is_observed
+    isolated(<<~RUBY)
+      original = Liquid::Condition.method(:new)
+      calls = 0
+      Liquid::Condition.define_singleton_method(:new) do |*args|
+        calls += 1
+        original.call(*args)
+      end
+      template = parse("{% if yes %}ok{% endif %}")
+      raise "condition constructor override was bypassed" unless calls.positive?
+      check("ok", template.render!("yes" => true))
+    RUBY
+  end
+
+  def test_private_condition_constructor_preserves_parse_error
+    isolated(<<~RUBY)
+      Liquid::Condition.singleton_class.send(:private, :new)
+      begin
+        parse("{% if yes %}ok{% endif %}")
+        raise "private condition constructor was bypassed"
+      rescue NoMethodError => error
+        check(:new, error.name)
+      end
+    RUBY
+  end
+
+  def test_builtin_method_entry_refresh_keeps_direct_compilation
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~RUBY)
+      GC.start
+      GC.disable
+      placeholder = Liquid::C.const_get(:VariablePlaceholder)
+      parse("{{ item.name }}").render!("item" => { "name" => "first" })
+      String.class_eval do
+        alias_method :dup, :dup
+        remove_method :dup
+      end
+      before = ObjectSpace.each_object(placeholder).count
+      template = parse("{{ item.name }}")
+      raise "builtin entry change disabled direct compilation" unless ObjectSpace.each_object(placeholder).count > before
+      check("second", template.render!("item" => { "name" => "second" }))
+      GC.enable
+      GC.start
+      GC.compact if GC.respond_to?(:compact)
+      check("third", parse("{{ item.name }}").render!("item" => { "name" => "third" }))
+    RUBY
+  end
+
+  def test_actual_dup_override_disables_direct_compilation
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~RUBY)
+      original = String.instance_method(:dup)
+      String.define_method(:dup) { original.bind_call(self) }
+      GC.start
+      GC.disable
+      placeholder = Liquid::C.const_get(:VariablePlaceholder)
+      before = ObjectSpace.each_object(placeholder).count
+      template = parse("{{ item.name | append: '!' }}")
+      check(before, ObjectSpace.each_object(placeholder).count)
+      check("ok!", template.render!("item" => { "name" => "ok" }))
+    RUBY
+  end
+
+  def test_private_builtin_disables_direct_compilation
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~RUBY)
+      String.class_eval { private :dup }
+      GC.start
+      GC.disable
+      placeholder = Liquid::C.const_get(:VariablePlaceholder)
+      before = ObjectSpace.each_object(placeholder).count
+      parse("{{ item.name }}")
+      check(before, ObjectSpace.each_object(placeholder).count)
+    RUBY
+  end
+
   def isolated(source, before: "")
     extension = $LOADED_FEATURES.find { |path| path.end_with?("/liquid_c.so", "/liquid_c.bundle") }
     prelude = <<~RUBY

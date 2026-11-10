@@ -1396,7 +1396,7 @@ static VALUE native_enable_variable_frontend(VALUE self)
 
 #if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
 static VALUE compiler_guard_specs = Qnil;
-static struct { VALUE owner, entry; ID method; bool public_call, control; } compiler_methods[256];
+static struct { VALUE owner, entry; ID method; bool public_call, control, builtin; } compiler_methods[256];
 static size_t compiler_method_count;
 static VALUE compiler_guard_entries = Qnil;
 static VALUE renderer_guard_entries = Qnil;
@@ -1454,6 +1454,8 @@ static VALUE compiler_stat = Qnil, compiler_epoch = Qundef;
 static bool compiler_ready;
 static bool compiler_registered;
 static ID renderer_ids[3];
+static VALUE rejected_renderer_entries = Qnil;
+static size_t rejected_renderer_gc = SIZE_MAX;
 
 static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE enabled)
 {
@@ -1484,6 +1486,7 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
         if (entry) rb_gc_register_mark_object(entry);
         rb_ary_push(compiler_guard_entries, entry);
         compiler_methods[i].control = RTEST(RARRAY_AREF(spec, 2));
+        compiler_methods[i].builtin = rb_method_basic_definition_p(owner, SYM2ID(RARRAY_AREF(spec, 1)));
         compiler_methods[i].owner = owner;
         compiler_methods[i].entry = entry;
         ID method = SYM2ID(RARRAY_AREF(spec, 1));
@@ -1499,6 +1502,8 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
     }
     bool renderers_standard = liquid_vm_render_methods_standard();
     renderer_guard_entries = rb_ary_new_capa(3);
+    rejected_renderer_entries = rb_ary_new_from_args(3, Qnil, Qnil, Qnil);
+    rb_gc_register_address(&rejected_renderer_entries);
     const char *names[] = { "render", "render_to_output_buffer", "render_obj_to_output" };
     for (size_t i = 0; i < 3; i++) {
         renderer_ids[i] = rb_intern(names[i]);
@@ -1524,12 +1529,32 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
 bool variable_render_methods_standard(void)
 {
     if (!compiler_registered) return false;
+    if (!NIL_P(rejected_renderer_entries) && rejected_renderer_gc == rb_gc_count() &&
+        rb_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
+        rb_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
+        bool unchanged = true;
+        for (size_t i = 0; i < 3; i++)
+            if (RARRAY_AREF(rejected_renderer_entries, i) != (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]))
+                unchanged = false;
+        if (unchanged) return false;
+    }
     for (size_t i = 0; i < 3; i++) {
         VALUE current = (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]);
         if (RARRAY_AREF(renderer_guard_entries, i) == current) continue;
         // Re-aliasing a builtin creates a new method entry with the same body.
         size_t gc = rb_gc_count();
-        if (!liquid_vm_render_methods_standard() || gc != rb_gc_count()) return false;
+        bool standard = liquid_vm_render_methods_standard();
+        if (gc != rb_gc_count()) return false;
+        if (!standard) {
+            if (rb_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
+                rb_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
+                for (size_t j = 0; j < 3; j++)
+                    rb_ary_store(rejected_renderer_entries, (long)j, (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[j]));
+                rejected_renderer_gc = rb_gc_count();
+            }
+            return false;
+        }
+        rejected_renderer_gc = SIZE_MAX;
         for (size_t j = 0; j < 3; j++)
             rb_ary_store(renderer_guard_entries, (long)j, (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[j]));
         break;
@@ -1586,7 +1611,11 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
         if (compiler_methods[i].control) continue;
         VALUE owner = compiler_methods[i].owner;
         ID method = compiler_methods[i].method;
-        if (compiler_methods[i].entry != (VALUE)rb_callable_method_entry(owner, method)) return false;
+        VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
+        if (compiler_methods[i].entry != current_entry) {
+            if (!compiler_methods[i].builtin || !rb_method_basic_definition_p(owner, method)) return false;
+            compiler_methods[i].entry = current_entry;
+        }
         if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
     }
     if (NIL_P(compiler_constants)) return false;
@@ -1605,8 +1634,12 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
     for (size_t i = 0; i < primitive_guard_count; i++) {
         VALUE owner = primitive_guards[i].owner;
         ID method = primitive_guards[i].method;
-        if (primitive_guards[i].entry != (VALUE)rb_callable_method_entry(owner, method) ||
-            (primitive_guards[i].public_call && rb_method_boundp(owner, method, 3) != 1)) return false;
+        VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
+        if (primitive_guards[i].entry != current_entry) {
+            if (!rb_method_basic_definition_p(owner, method)) return false;
+            primitive_guards[i].entry = current_entry;
+        }
+        if (primitive_guards[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
     }
     if (rb_get_alloc_func(cLiquidVariableLookup) != rb_get_alloc_func(rb_cObject) ||
         rb_get_alloc_func(cLiquidRangeLookup) != rb_get_alloc_func(rb_cObject) ||
@@ -1633,7 +1666,11 @@ static bool native_control_methods_standard(void)
         if (!compiler_methods[i].control) continue;
         VALUE owner = compiler_methods[i].owner;
         ID method = compiler_methods[i].method;
-        if (compiler_methods[i].entry != (VALUE)rb_callable_method_entry(owner, method)) return false;
+        VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
+        if (compiler_methods[i].entry != current_entry) {
+            if (!compiler_methods[i].builtin || !rb_method_basic_definition_p(owner, method)) return false;
+            compiler_methods[i].entry = current_entry;
+        }
         if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
     }
     if (NIL_P(compiler_constants)) return false;
