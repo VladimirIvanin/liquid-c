@@ -40,6 +40,7 @@ jobs:
   test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.allowed-failure }}
     timeout-minutes: 10
     strategy:
       matrix:
@@ -60,13 +61,11 @@ jobs:
           bundler-cache: true
 
       - run: bundle exec rake
-        continue-on-error: ${{ matrix.allowed-failure }}
         env:
           LIQUID_C_PEDANTIC: 'true'
         if: matrix.ruby != 'truffleruby-head'
 
       - run: bundle exec rake test:unit
-        continue-on-error: ${{ matrix.allowed-failure }}
         env:
           LIQUID_C_PEDANTIC: 'true'
           TEST_OPTS: '-v -s0'
@@ -100,7 +99,7 @@ jobs:
           install_args: hk jactionlint betterleaks osv-scanner
           add_shims_to_path: false
       - name: Use the Ruby installed by setup-ruby
-        run: mise link ruby@3.3.0 "$(ruby -rrbconfig -e 'print RbConfig::CONFIG.fetch("prefix")')"
+        run: mise link ruby@3.3.13 "$(ruby -rrbconfig -e 'print RbConfig::CONFIG.fetch("prefix")')"
       - name: Install compiler and Valgrind
         run: |
           sudo apt-get update

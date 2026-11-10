@@ -81,7 +81,7 @@ mise run setup
 mise run check
 ```
 
-Tool versions are pinned in `mise.toml`; Ruby stays at 3.3.0. The development
+Tool versions are pinned in `mise.toml`; Ruby stays at 3.3.13. The development
 bundle requires Ruby 3.2+ for the patched Nokogiri. RuboCop rules are unchanged.
 Pre-commit checks Ruby, workflows and staged secrets; pre-push runs the full
 check. CI also runs it on pull requests, pushes to `main` and weekly, including

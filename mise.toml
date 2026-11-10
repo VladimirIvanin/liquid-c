@@ -5,7 +5,7 @@ GEM_HOME = false
 GEM_PATH = false
 
 [tools]
-ruby = "3.3.0"
+ruby = "3.3.13"
 hk = "2.11.1"
 jactionlint = "2.5.0"
 betterleaks = "1.10.0"
