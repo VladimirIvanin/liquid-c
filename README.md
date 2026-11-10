@@ -34,40 +34,34 @@ then just use the documented API for the liquid Gem.
 
 ## Performance
 
-To compare Liquid-C's performance with plain Liquid run
+To compare this fork with plain Liquid, build the extension in release mode and run:
 
-    bundle exec rake compare:lax
-
-The latest benchmark results are shown below:
-
+```sh
+DEBUG=false bundle exec rake clean compile
+bundle exec rake compare:lax
 ```
-$ bundle exec rake compare:lax
-/home/spin/.rubies/ruby-3.0.2/bin/ruby ./performance.rb bare benchmark lax
 
-Running benchmark for 10 seconds (with 5 seconds warmup).
+The following local results were measured on 2026-11-10 at revision `caa4ed5`,
+using Ruby 3.3.13, Liquid 5.14.0 and an AMD Ryzen 7 5700U (x86_64 Linux).
+The Liquid benchmark enables YJIT in both processes. Each operation has a
+10-second warmup and a 20-second measurement; plain Liquid runs first, followed
+by Liquid C, in separate processes with `lax` parsing.
 
-Warming up --------------------------------------
-              parse:     2.000  i/100ms
-             render:     8.000  i/100ms
-     parse & render:     2.000  i/100ms
-Calculating -------------------------------------
-              parse:     29.527  (± 3.4%) i/s -    296.000  in  10.034520s
-             render:     89.403  (± 6.7%) i/s -    896.000  in  10.072939s
-     parse & render:     20.474  (± 4.9%) i/s -    206.000  in  10.072806s
+| Operation | Plain Liquid (i/s) | Liquid C (i/s) |
+| --- | ---: | ---: |
+| tokenize | 923.852 (±12.1%) | 923.821 (±6.6%) |
+| parse | 41.639 (±12.0%) | 40.002 (±7.5%) |
+| render | 136.508 (±16.1%) | 98.799 (±8.1%) |
+| parse & render | 31.155 (±12.8%) | 25.943 (±7.7%) |
 
-/home/spin/.rubies/ruby-3.0.2/bin/ruby ./performance.rb c benchmark lax
+These are indicative results from one local run with substantial variability,
+not a general speedup claim. Liquid C was slower for render and parse & render
+in this run. Repeat measurements on your own workload before drawing conclusions.
+The previous Ruby 3.0.2 results came from the original Liquid C README and did
+not measure this fork; the runtime and benchmark have also changed since then.
 
-Running benchmark for 10 seconds (with 5 seconds warmup).
-
-Warming up --------------------------------------
-              parse:    10.000  i/100ms
-             render:    18.000  i/100ms
-     parse & render:     5.000  i/100ms
-Calculating -------------------------------------
-              parse:     90.672  (± 3.3%) i/s -    910.000  in  10.051124s
-             render:    163.871  (± 4.9%) i/s -      1.638k in  10.018105s
-     parse & render:     50.165  (± 4.0%) i/s -    505.000  in  10.077377s
-```
+See the [benchmark guide](performance/README.md) for controlled, repeated
+measurements, including runs without YJIT and comparisons between engine versions.
 
 ## Developing
 
