@@ -355,6 +355,50 @@ void vm_assembler_patch_lookup_guard(vm_assembler_t *code, size_t offset)
     uint32_to_bytes((uint32_t)distance, code->instructions.data + offset + 1);
 }
 
+static size_t blank_raw_bytes(const uint8_t *ip)
+{
+    if (*ip == OP_WRITE_RAW) return (size_t)ip[1] + 2;
+    if (*ip == OP_WRITE_RAW_W) return (size_t)bytes_to_uint24(ip + 1) + 4;
+    return 0;
+}
+
+size_t vm_assembler_remove_blank_strings(vm_assembler_t *code)
+{
+    uint8_t *read = code->instructions.data;
+    uint8_t *write = read;
+    uint8_t *end = code->instructions.data_end;
+    size_t removed_nodes = 0;
+    while (read < end) {
+        const uint8_t *next = read;
+        liquid_vm_next_instruction(&next);
+        size_t raw_bytes = blank_raw_bytes(read);
+        if (raw_bytes) {
+            if (raw_bytes > (*read == OP_WRITE_RAW ? 2U : 4U)) removed_nodes++;
+            read = (uint8_t *)next;
+            continue;
+        }
+        size_t size = (size_t)(next - read);
+        if (*read == OP_LOOKUP_GUARD) {
+            uint32_t distance = bytes_to_uint32(read + 1);
+            const uint8_t *target = next + distance;
+            size_t removed = 0;
+            for (const uint8_t *scan = next; scan < target;) {
+                const uint8_t *following = scan;
+                liquid_vm_next_instruction(&following);
+                if (blank_raw_bytes(scan)) removed += (size_t)(following - scan);
+                scan = following;
+            }
+            distance -= (uint32_t)removed;
+            uint32_to_bytes(distance, read + 1);
+        }
+        memmove(write, read, size);
+        write += size;
+        read = (uint8_t *)next;
+    }
+    code->instructions.data_end = write;
+    return removed_nodes;
+}
+
 void vm_assembler_require_stack_args(vm_assembler_t *code, unsigned int count)
 {
     if (code->stack_size < code->protected_stack_size || code->stack_size - code->protected_stack_size < count) {

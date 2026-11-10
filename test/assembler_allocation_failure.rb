@@ -50,4 +50,28 @@ raise "failed to recover native compilation" unless Liquid::Template.parse(
   error_mode: :warn,
 ).render!("value" => "ok") == "ok!" * 8
 
+[0, 1].each do |after|
+  context = Liquid::ParseContext.new
+  context.start_liquid_c_parsing
+  first = Liquid::C::BlockBody.new(context)
+  first.parse(context.new_tokenizer("first"), context) { |*| }
+  first.freeze
+  second = Liquid::C::BlockBody.new(context)
+  second.parse(context.new_tokenizer("second"), context) { |*| }
+  Liquid::C.test_fail_assembler_allocation(after)
+  begin
+    second.freeze
+    abort("document write checkpoint #{after} did not fail")
+  rescue NoMemoryError
+    # The failed write must leave the logical document unchanged for retry.
+  ensure
+    Liquid::C.test_fail_assembler_allocation(-1)
+  end
+  second.freeze
+  context.cleanup_liquid_c_parsing
+  render_context = Liquid::Context.new
+  raise "first body changed after failed write" unless first.render_to_output_buffer(render_context, +"") == "first"
+  raise "failed document write was not retryable" unless second.render_to_output_buffer(render_context, +"") == "second"
+end
+
 puts "#{700 + failures} injected allocation failures recovered"

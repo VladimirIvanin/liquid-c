@@ -1488,7 +1488,6 @@ static VALUE native_enable_variable_frontend(VALUE self)
 static VALUE compiler_guard_specs = Qnil;
 static struct { VALUE owner, entry; ID method; bool public_call, control, builtin; } compiler_methods[256];
 static size_t compiler_method_count;
-static VALUE compiler_guard_entries = Qnil;
 static VALUE renderer_guard_entries = Qnil;
 static VALUE compiler_body_class = Qnil;
 static rb_alloc_func_t compiler_body_allocator;
@@ -1546,8 +1545,6 @@ static VALUE compiler_stat = Qnil, compiler_epoch = Qundef;
 static bool compiler_ready;
 static bool compiler_registered;
 static ID renderer_ids[3];
-static VALUE rejected_renderer_entries = Qnil;
-static size_t rejected_renderer_gc = SIZE_MAX;
 
 static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE enabled)
 {
@@ -1566,7 +1563,6 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
     compiler_guard_specs = specifications;
     compiler_body_class = rb_const_get(mLiquidC, rb_intern("BlockBody"));
     compiler_body_allocator = rb_get_alloc_func(compiler_body_class);
-    compiler_guard_entries = rb_ary_new_capa(RARRAY_LEN(specifications));
     compiler_method_count = (size_t)RARRAY_LEN(specifications);
     for (long i = 0; i < RARRAY_LEN(specifications); i++) {
         VALUE spec = RARRAY_AREF(specifications, i);
@@ -1575,8 +1571,6 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
         VALUE owner = RARRAY_AREF(spec, 0);
         Check_Type(RARRAY_AREF(spec, 1), T_SYMBOL);
         VALUE entry = (VALUE)rb_callable_method_entry(owner, SYM2ID(RARRAY_AREF(spec, 1)));
-        if (entry) rb_gc_register_mark_object(entry);
-        rb_ary_push(compiler_guard_entries, entry);
         compiler_methods[i].control = RTEST(RARRAY_AREF(spec, 2));
         compiler_methods[i].builtin = liquid_method_basic_definition_p(owner, SYM2ID(RARRAY_AREF(spec, 1)));
         compiler_methods[i].owner = owner;
@@ -1594,13 +1588,10 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
     }
     bool renderers_standard = liquid_vm_render_methods_standard();
     renderer_guard_entries = rb_ary_new_capa(3);
-    rejected_renderer_entries = rb_ary_new_from_args(3, Qnil, Qnil, Qnil);
-    rb_gc_register_address(&rejected_renderer_entries);
     const char *names[] = { "render", "render_to_output_buffer", "render_obj_to_output" };
     for (size_t i = 0; i < 3; i++) {
         renderer_ids[i] = rb_intern(names[i]);
         VALUE entry = renderers_standard ? (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]) : 0;
-        if (entry) rb_gc_register_mark_object(entry);
         rb_ary_push(renderer_guard_entries, entry);
     }
     compiler_ready = RTEST(enabled);
@@ -1621,15 +1612,6 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
 bool variable_render_methods_standard(void)
 {
     if (!compiler_registered) return false;
-    if (!NIL_P(rejected_renderer_entries) && rejected_renderer_gc == liquid_gc_count() &&
-        liquid_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
-        liquid_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
-        bool unchanged = true;
-        for (size_t i = 0; i < 3; i++)
-            if (RARRAY_AREF(rejected_renderer_entries, i) != (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]))
-                unchanged = false;
-        if (unchanged) return false;
-    }
     for (size_t i = 0; i < 3; i++) {
         VALUE current = (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]);
         if (RARRAY_AREF(renderer_guard_entries, i) == current) continue;
@@ -1637,16 +1619,7 @@ bool variable_render_methods_standard(void)
         size_t gc = liquid_gc_count();
         bool standard = liquid_vm_render_methods_standard();
         if (gc != liquid_gc_count()) return false;
-        if (!standard) {
-            if (liquid_method_basic_definition_p(CLASS_OF(cLiquidVariable), rb_intern("instance_method")) &&
-                liquid_method_basic_definition_p(native_unbound_class, rb_intern("=="))) {
-                for (size_t j = 0; j < 3; j++)
-                    rb_ary_store(rejected_renderer_entries, (long)j, (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[j]));
-                rejected_renderer_gc = liquid_gc_count();
-            }
-            return false;
-        }
-        rejected_renderer_gc = SIZE_MAX;
+        if (!standard) return false;
         for (size_t j = 0; j < 3; j++)
             rb_ary_store(renderer_guard_entries, (long)j, (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[j]));
         break;
@@ -2296,7 +2269,6 @@ void liquid_define_native_parser(void)
 {
 #if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
     rb_global_variable(&compiler_guard_specs);
-    rb_global_variable(&compiler_guard_entries);
     rb_global_variable(&renderer_guard_entries);
     rb_global_variable(&compiler_body_class);
     rb_global_variable(&compiler_constants);

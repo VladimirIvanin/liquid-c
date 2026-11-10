@@ -22,5 +22,6 @@ VALUE vm_assembler_pool_new(void);
 vm_assembler_t *vm_assembler_pool_alloc_assembler(vm_assembler_pool_t *pool);
 void vm_assembler_pool_free_assembler(vm_assembler_t *assembler);
 void vm_assembler_pool_recycle_assembler(vm_assembler_pool_t *pool, vm_assembler_t *assembler);
+void vm_assembler_pool_clear(vm_assembler_pool_t *pool);
 
 #endif

@@ -92,6 +92,8 @@ static VALUE block_body_allocate(VALUE klass)
     body->as.intermediate.render_score = 0;
     body->as.intermediate.vm_assembler_pool = NULL;
     body->as.intermediate.code = NULL;
+    body->as.intermediate.discardable = false;
+    body->as.intermediate.discarded = false;
     return obj;
 }
 
@@ -127,6 +129,8 @@ static VALUE block_body_initialize_copy(VALUE self, VALUE other)
         body->as.intermediate.vm_assembler_pool = original->as.intermediate.vm_assembler_pool;
         body->as.intermediate.blank = original->as.intermediate.blank;
         body->as.intermediate.render_score = original->as.intermediate.render_score;
+        body->as.intermediate.discardable = false;
+        body->as.intermediate.discarded = false;
         vm_assembler_t *src = original->as.intermediate.code;
         vm_assembler_t *dest = vm_assembler_pool_alloc_assembler(body->as.intermediate.vm_assembler_pool);
         body->as.intermediate.code = dest;
@@ -413,12 +417,18 @@ static VALUE block_body_parse(VALUE self, VALUE tokenizer_obj, VALUE parse_conte
     return rb_yield_values(2, unknown_tag.name, unknown_tag.markup);
 }
 
+static VALUE block_body_discard_unreachable(VALUE self);
+
 static VALUE block_body_freeze(VALUE self)
 {
     block_body_t *body;
     BlockBody_Get_Struct(self, body);
 
     if (body->compiled) return rb_call_super(0, NULL);
+
+    if (body->as.intermediate.discardable && !body->as.intermediate.discarded)
+        block_body_discard_unreachable(self);
+    if (body->as.intermediate.discarded) return rb_call_super(0, NULL);
 
     ensure_intermediate_not_parsing(self, body);
 
@@ -437,6 +447,37 @@ static VALUE block_body_freeze(VALUE self)
     vm_assembler_pool_recycle_assembler(assembler_pool, assembler);
 
     return rb_call_super(0, NULL);
+}
+
+static VALUE block_body_mark_discardable(VALUE self)
+{
+    block_body_t *body;
+    BlockBody_Get_Struct(self, body);
+    ensure_intermediate_not_parsing(self, body);
+    if (body->as.intermediate.discardable)
+        rb_raise(rb_eRuntimeError, "Block body already marked discardable");
+    VALUE document = parse_context_get_document_body(body->as.intermediate.parse_context);
+    document_body_checkpoint(document, &body->as.intermediate.discard_buffer_size,
+        &body->as.intermediate.discard_constants_len, &body->as.intermediate.discard_serial);
+    body->as.intermediate.discardable = true;
+    return self;
+}
+
+static VALUE block_body_discard_unreachable(VALUE self)
+{
+    block_body_t *body;
+    BlockBody_Get_Struct(self, body);
+    if (body->as.intermediate.discarded) return Qnil;
+    ensure_intermediate_not_parsing(self, body);
+    if (!body->as.intermediate.discardable)
+        rb_raise(rb_eRuntimeError, "Block body is not discardable");
+    VALUE document = parse_context_get_document_body(body->as.intermediate.parse_context);
+    document_body_truncate(document, body->as.intermediate.discard_buffer_size,
+        body->as.intermediate.discard_constants_len, body->as.intermediate.discard_serial);
+    vm_assembler_pool_free_assembler(body->as.intermediate.code);
+    body->as.intermediate.code = NULL;
+    body->as.intermediate.discarded = true;
+    return Qnil;
 }
 
 // Build the ordinary Ruby tag objects, but keep standard structural parsing
@@ -725,22 +766,7 @@ static VALUE block_body_remove_blank_strings(VALUE self)
         rb_raise(rb_eRuntimeError, "remove_blank_strings only support being called on a blank block body");
     }
 
-    uint8_t *ip = body->as.intermediate.code->instructions.data;
-
-    while (*ip != OP_LEAVE) {
-        if (*ip == OP_WRITE_RAW) {
-            if (ip[1]) { // if (size != 0)
-                ip[0] = OP_JUMP_FWD; // effectively a no-op
-                body->as.intermediate.render_score--;
-            }
-        } else if (*ip == OP_WRITE_RAW_W) {
-            if (ip[1] || ip[2] || ip[3]) { // if (size != 0)
-                ip[0] = OP_JUMP_FWD_W; // effectively a no-op
-                body->as.intermediate.render_score--;
-            }
-        }
-        liquid_vm_next_instruction((const uint8_t **)&ip);
-    }
+    body->as.intermediate.render_score -= vm_assembler_remove_blank_strings(body->as.intermediate.code);
 
     return Qnil;
 }
@@ -923,6 +949,8 @@ void liquid_define_block_body(void)
     rb_define_private_method(cLiquidCBlockBody, "initialize_copy", block_body_initialize_copy, 1);
     rb_define_method(cLiquidCBlockBody, "parse", block_body_parse, 2);
     rb_define_method(cLiquidCBlockBody, "freeze", block_body_freeze, 0);
+    rb_define_private_method(cLiquidCBlockBody, "mark_discardable", block_body_mark_discardable, 0);
+    rb_define_private_method(cLiquidCBlockBody, "discard_unreachable", block_body_discard_unreachable, 0);
     rb_define_method(cLiquidCBlockBody, "render_to_output_buffer", block_body_render_to_output_buffer, 2);
     rb_define_method(cLiquidCBlockBody, "remove_blank_strings", block_body_remove_blank_strings, 0);
     rb_define_method(cLiquidCBlockBody, "blank?", block_body_blank_p, 0);

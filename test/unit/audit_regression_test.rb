@@ -2,9 +2,130 @@
 
 require "test_helper"
 require "rbconfig"
+require "objspace"
+require "weakref"
 require_relative "../compatibility/process_runner"
 
 class AuditRegressionTest < Minitest::Test
+  def test_discarded_case_prologue_releases_nested_bytecode
+    source = "{% case x %}{% if y %}" + ("z" * 1_048_576) + "{% endif %}{% when 1 %}OK{% endcase %}"
+    template = Thread.new { Liquid::Template.parse(source, error_mode: :strict) }.value
+    GC.start(full_mark: true, immediate_sweep: true)
+    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
+    assert_operator(sizes.max, :<, 4096)
+    assert_equal("OK", template.render!("x" => 1))
+    assert_equal(["OK"], template.root.nodelist.first.nodelist.first.nodelist)
+  end
+
+  def test_external_reference_to_discarded_nested_body_cannot_read_reused_bytes
+    return isolate(__method__) unless ENV["LIQUID_AUDIT_CASE"] == __method__.to_s
+
+    captured = []
+    capture = Module.new do
+      define_method(:parse) do |tokens|
+        result = super(tokens)
+        captured << self
+        result
+      end
+    end
+    Liquid::If.prepend(capture)
+    template = Liquid::Template.parse(
+      "{% case x %}{% if a %}LOST{% endif %}{% when 1 %}PRESENT{% endcase %}", error_mode: :strict
+    )
+    body = captured.last.blocks.first.attachment
+    assert_equal("PRESENT", template.render!("x" => 1))
+    error = assert_raises(RuntimeError) { body.render_to_output_buffer(Liquid::Context.new("a" => true), +"") }
+    assert_match(/discarded/, error.message)
+  end
+
+  def test_disabled_context_setters_release_hidden_vm_references
+    context = Liquid::Context.build
+    template = Liquid::Template.parse("{{ value }}")
+    payload_ref = Thread.new do
+      payload = "g" * 1_048_576
+      context.global_filter = lambda do |value|
+        payload.bytesize
+        value
+      end
+      template.render!(context)
+      WeakRef.new(payload)
+    end.value
+    strainer_ref = WeakRef.new(context.strainer)
+    Liquid::C.enabled = false
+    context.global_filter = nil
+    context.add_filters(Module.new)
+    GC.start(full_mark: true, immediate_sweep: true)
+    refute_predicate(payload_ref, :weakref_alive?)
+    refute_predicate(strainer_ref, :weakref_alive?)
+  ensure
+    Liquid::C.enabled = true
+  end
+
+  def test_parsing_cleanup_releases_free_assemblers_with_unfinished_body
+    2.times do |order|
+      context = Liquid::ParseContext.new
+      context.start_liquid_c_parsing
+      unfinished = [Liquid::C::BlockBody.new(context), Liquid::C::BlockBody.new(context)]
+      body = Liquid::C::BlockBody.new(context)
+      body.parse(context.new_tokenizer("x" * 1_048_576), context) { |*| }
+      body.freeze
+      pool = ObjectSpace.each_object(Liquid::C::VMAssemblerPool).find do |candidate|
+        ObjectSpace.memsize_of(candidate) > 1_048_576
+      end
+      refute_nil(pool)
+      context.cleanup_liquid_c_parsing
+      unfinished[order] = nil
+      GC.start(full_mark: true, immediate_sweep: true)
+      assert_operator(ObjectSpace.memsize_of(pool), :<, 4096)
+      assert_predicate(unfinished[1 - order], :blank?)
+    end
+  end
+
+  def test_blank_body_compacts_raw_bytecode_and_preserves_ast
+    template = Liquid::Template.parse("{% if x %}" + (" " * 1_048_576) + "{% endif %}", error_mode: :strict)
+    GC.start(full_mark: true, immediate_sweep: true)
+    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
+    assert_operator(sizes.max, :<, 4096)
+    assert_equal([], template.root.nodelist.first.blocks.first.attachment.nodelist)
+    assert_equal("", template.render!("x" => true))
+  end
+
+  def test_nested_blank_conditions_keep_lookup_jumps_valid
+    source = "{% if a.b %}" + (" " * 200_000) + "{% if c %}" + (" " * 200_000) + "{% endif %}{% endif %}"
+    template = Liquid::Template.parse(source, error_mode: :strict)
+    GC.start(full_mark: true, immediate_sweep: true)
+    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
+    assert_operator(sizes.max, :<, 4096)
+    assert_equal("", template.render!("a" => { "b" => true }, "c" => true))
+    assert_equal("", template.render!("a" => {}, "c" => true))
+    nested = template.root.nodelist.first.blocks.first.attachment.nodelist
+    assert_equal(1, nested.size)
+    assert_equal([], nested.first.blocks.first.attachment.nodelist)
+  end
+
+  def test_variable_materialization_exposes_original_parse_context
+    [true, false].each do |enabled|
+      Liquid::C.enabled = enabled
+      variable = Liquid::Template.parse("{{ value }}", error_mode: :warn).root.nodelist.first
+      context = variable.parse_context
+      warnings = context.warnings
+      cache = context.instance_variable_get(:@expression_cache)
+      GC.start(full_mark: true, immediate_sweep: true)
+      assert_same(context, variable.parse_context)
+      assert_same(warnings, variable.parse_context.warnings)
+      assert_same(cache, variable.parse_context.instance_variable_get(:@expression_cache))
+    end
+  ensure
+    Liquid::C.enabled = true
+  end
+
+  def test_finished_document_reports_and_releases_spare_capacity
+    template = Liquid::Template.parse("x" * 600_000)
+    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
+    assert(sizes.any? { |size| size >= 600_000 && size < 700_000 }, sizes.inspect)
+    assert_equal("x" * 600_000, template.render!)
+  end
+
   def test_compiled_body_copies_keep_document_alive
     return isolate(__method__) unless ENV["LIQUID_AUDIT_CASE"] == __method__.to_s
 

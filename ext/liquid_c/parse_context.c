@@ -60,7 +60,14 @@ static VALUE parse_context_start_liquid_c_parsing(VALUE self)
 
 static VALUE parse_context_cleanup_liquid_c_parsing(VALUE self)
 {
-    rb_obj_freeze(rb_ivar_get(self, id_document_body));
+    VALUE pool_obj = rb_ivar_get(self, id_vm_assembler_pool);
+    if (!NIL_P(pool_obj)) {
+        vm_assembler_pool_t *pool;
+        VMAssemblerPool_Get_Struct(pool_obj, pool);
+        vm_assembler_pool_clear(pool);
+    }
+    VALUE document = rb_ivar_get(self, id_document_body);
+    if (!NIL_P(document)) document_body_finish(document);
     rb_ivar_set(self, id_document_body, Qnil);
     rb_ivar_set(self, id_vm_assembler_pool, Qnil);
     return Qnil;

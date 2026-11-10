@@ -22,17 +22,23 @@ typedef struct document_body {
     VALUE constants;
     long frontend_cache_size;
     c_buffer_t buffer;
+    c_buffer_t invalid_serials;
+    size_t next_serial;
 } document_body_t;
 
 typedef struct document_body_entry {
     document_body_t *body;
     size_t buffer_offset;
+    size_t serial;
 } document_body_entry_t;
 
 void liquid_define_document_body(void);
 VALUE document_body_new_instance(void);
 bool document_body_cache_stable(VALUE self, long size);
 document_body_entry_t document_body_write_block_body(VALUE self, bool blank, uint32_t render_score, vm_assembler_t *code);
+void document_body_checkpoint(VALUE self, size_t *buffer_size, long *constants_len, size_t *serial);
+void document_body_truncate(VALUE self, size_t buffer_size, long constants_len, size_t serial);
+void document_body_finish(VALUE self);
 
 static inline void document_body_entry_mark(document_body_entry_t *entry)
 {
@@ -42,6 +48,19 @@ static inline void document_body_entry_mark(document_body_entry_t *entry)
 
 static inline block_body_header_t *document_body_get_block_body_header_ptr(const document_body_entry_t *entry)
 {
+    const size_t *ranges = (const size_t *)entry->body->invalid_serials.data;
+    size_t range_count = c_buffer_size(&entry->body->invalid_serials) / (2 * sizeof(size_t));
+    size_t low = 0, high = range_count;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        if (ranges[middle * 2 + 1] < entry->serial) low = middle + 1;
+        else high = middle;
+    }
+    if (low < range_count && entry->serial >= ranges[low * 2])
+        rb_raise(rb_eRuntimeError, "Liquid block body was discarded during parsing");
+    size_t size = c_buffer_size(&entry->body->buffer);
+    if (entry->buffer_offset > size || size - entry->buffer_offset < sizeof(block_body_header_t))
+        rb_raise(rb_eRuntimeError, "Liquid block body was discarded during parsing");
     return (block_body_header_t *)(entry->body->buffer.data + entry->buffer_offset);
 }
 

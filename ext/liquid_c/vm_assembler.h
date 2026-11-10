@@ -73,6 +73,7 @@ void vm_assembler_concat(vm_assembler_t *dest, const vm_assembler_t *src);
 void vm_assembler_require_stack_args(vm_assembler_t *code, unsigned int count);
 size_t vm_assembler_add_lookup_guard(vm_assembler_t *code);
 void vm_assembler_patch_lookup_guard(vm_assembler_t *code, size_t offset);
+size_t vm_assembler_remove_blank_strings(vm_assembler_t *code);
 
 void vm_assembler_add_write_raw(vm_assembler_t *code, const char *string, size_t size);
 void vm_assembler_add_write_raw_value(vm_assembler_t *code, VALUE string);
@@ -94,7 +95,15 @@ bool vm_assembler_opcode_has_constant(uint8_t ip);
 static inline size_t vm_assembler_alloc_memsize(const vm_assembler_t *code)
 {
     if (!code) return 0;
-    return c_buffer_capacity(&code->instructions) + c_buffer_capacity(&code->constants) + sizeof(st_table);
+    size_t table_size = 0;
+    if (code->constants_table) {
+#ifdef HAVE_ST_MEMSIZE
+        table_size = st_memsize(code->constants_table);
+#else
+        table_size = sizeof(st_table);
+#endif
+    }
+    return c_buffer_capacity(&code->instructions) + c_buffer_capacity(&code->constants) + table_size;
 }
 
 static inline void vm_assembler_write_opcode(vm_assembler_t *code, enum opcode op)

@@ -18,6 +18,11 @@ typedef struct block_body {
             bool blank;
             unsigned int render_score;
             vm_assembler_t *code;
+            bool discardable;
+            bool discarded;
+            size_t discard_buffer_size;
+            long discard_constants_len;
+            size_t discard_serial;
         } intermediate;
     } as;
 } block_body_t;

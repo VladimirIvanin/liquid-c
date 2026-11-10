@@ -216,6 +216,8 @@ static VALUE context_add_filters(VALUE self, VALUE filters)
     if (!NIL_P(vm_obj)) {
         vm_t *vm = DATA_PTR(vm_obj);
         if (vm->context.self == self) {
+            vm->context.strainer = Qnil;
+            vm->context.filter_methods = Qnil;
             vm->context_generation = 0;
             vm->context_revision++;
         }

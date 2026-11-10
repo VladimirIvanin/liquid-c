@@ -19,12 +19,23 @@ typedef struct {
 static void placeholder_mark(void *opaque)
 {
     variable_placeholder_t *node = opaque;
-    rb_gc_mark(node->markup);
-    rb_gc_mark(node->context);
-    rb_gc_mark(node->line);
-    rb_gc_mark(node->name);
-    rb_gc_mark(node->filters);
-    rb_gc_mark(node->variable);
+    rb_gc_mark_movable(node->markup);
+    rb_gc_mark_movable(node->context);
+    rb_gc_mark_movable(node->line);
+    rb_gc_mark_movable(node->name);
+    rb_gc_mark_movable(node->filters);
+    rb_gc_mark_movable(node->variable);
+}
+
+static void placeholder_compact(void *opaque)
+{
+    variable_placeholder_t *node = opaque;
+    node->markup = rb_gc_location(node->markup);
+    node->context = rb_gc_location(node->context);
+    node->line = rb_gc_location(node->line);
+    node->name = rb_gc_location(node->name);
+    node->filters = rb_gc_location(node->filters);
+    node->variable = rb_gc_location(node->variable);
 }
 
 static size_t placeholder_size(const void *opaque)
@@ -35,7 +46,7 @@ static size_t placeholder_size(const void *opaque)
 
 static const rb_data_type_t placeholder_type = {
     "liquid_variable_placeholder",
-    { placeholder_mark, RUBY_DEFAULT_FREE, placeholder_size },
+    { placeholder_mark, RUBY_DEFAULT_FREE, placeholder_size, placeholder_compact },
     NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED
 };
 

@@ -10,18 +10,22 @@ static void vm_assembler_pool_mark(void *ptr)
     rb_gc_mark(pool->self);
 }
 
-static void vm_assembler_pool_free(void *ptr)
+void vm_assembler_pool_clear(vm_assembler_pool_t *pool)
 {
-    vm_assembler_pool_t *pool = ptr;
-
     vm_assembler_element_t *element = pool->freelist;
+    pool->freelist = NULL;
     while (element) {
         vm_assembler_free(&element->vm_assembler);
         vm_assembler_element_t *next = element->next;
         xfree(element);
         element = next;
     }
+}
 
+static void vm_assembler_pool_free(void *ptr)
+{
+    vm_assembler_pool_t *pool = ptr;
+    vm_assembler_pool_clear(pool);
     xfree(pool);
 }
 

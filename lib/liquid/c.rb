@@ -48,6 +48,43 @@ Liquid::Raw.class_eval do
   end
 end
 
+module Liquid
+  module C
+    module CaseDiscardedBody
+      def parse(tokens)
+        @c_case_track_first_body = true
+        super
+      ensure
+        @c_case_track_first_body = false
+        @c_case_first_body = nil
+      end
+
+      def unknown_tag(tag, markup, tokens)
+        if (tag == "when" || tag == "else") && @c_case_first_body
+          @c_case_first_body.send(:discard_unreachable)
+          @c_case_first_body = nil
+        end
+        super
+      end
+
+      private
+
+      def new_body
+        body = super
+        if @c_case_track_first_body
+          @c_case_track_first_body = false
+          if body.is_a?(Liquid::C::BlockBody)
+            body.send(:mark_discardable)
+            @c_case_first_body = body
+          end
+        end
+        body
+      end
+    end
+  end
+end
+Liquid::Case.prepend(Liquid::C::CaseDiscardedBody)
+
 Liquid::ParseContext.class_eval do
   class << self
     attr_accessor :liquid_c_nodes_disabled
@@ -303,6 +340,9 @@ module Liquid
         end
         Liquid::C::CONTEXT_METHODS.each do |name, ruby_method, native_name|
           next if Liquid::Context.frozen?
+          # These setters must keep the hidden VM in sync even while rendering
+          # falls back to Ruby, so it can release references immediately.
+          next if !value && (name == :global_filter= || name == :add_filters)
 
           current = Liquid::Context.instance_method(name)
           current = current.super_method while current && current.owner != Liquid::Context
