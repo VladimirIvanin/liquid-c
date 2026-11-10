@@ -39,17 +39,6 @@ inline static int is_special(char c)
     return 0;
 }
 
-// Returns a pointer to the character after the end of the match.
-inline static const char *prefix_end(const char *cur, const char *end, const char *pattern)
-{
-    size_t pattern_len = strlen(pattern);
-
-    if (pattern_len > (size_t)(end - cur)) return NULL;
-    if (memcmp(cur, pattern, pattern_len) != 0) return NULL;
-
-    return cur + pattern_len;
-}
-
 inline static const char *scan_past(const char *cur, const char *end, char target)
 {
     const char *match = memchr(cur + 1, target, end - cur - 1);
@@ -65,7 +54,7 @@ inline static const char *scan_past(const char *cur, const char *end, char targe
 
 // Reads one token from start, and fills it into the token argument.
 // Returns the start of the next token if any, otherwise the end of the string.
-const char *lex_one(const char *start, const char *end, lexer_token_t *token)
+const char *lex_one(const char *start, const char *end, lexer_token_t *token, unsigned char previous_type)
 {
     // str references the start of the token, after whitespace is skipped.
     // cur references the currently processing character during iterative lexing.
@@ -96,9 +85,6 @@ const char *lex_one(const char *start, const char *end, lexer_token_t *token)
             break;
     }
 
-    if ((cur = prefix_end(str, end, "contains")))
-        RETURN_TOKEN(TOKEN_COMPARISON, cur - str);
-
     if (c == '\'' || c == '"') {
         cur = scan_past(str, end, c);
 
@@ -113,7 +99,7 @@ const char *lex_one(const char *start, const char *end, lexer_token_t *token)
         usage_increment("liquid_c_negative_float_without_integer");
     }
 
-    if (ISDIGIT(c) || c == '-') {
+    if (ISDIGIT(c) || (c == '-' && ISDIGIT(cn))) {
         int has_dot = 0;
         cur = str;
         while (++cur < end) {
@@ -139,6 +125,8 @@ const char *lex_one(const char *start, const char *end, lexer_token_t *token)
         cur = str;
         while (++cur < end && is_identifier(*cur)) {}
         if (cur < end && *cur == '?') cur++;
+        if (previous_type != TOKEN_DOT && cur - str == 8 && memcmp(str, "contains", 8) == 0)
+            RETURN_TOKEN(TOKEN_COMPARISON, 8);
         RETURN_TOKEN(TOKEN_IDENTIFIER, cur - str);
     }
 
@@ -174,7 +162,7 @@ const char *lex_one(const char *start, const char *end, lexer_token_t *token)
     if (char_len > 0) {
         rb_enc_raise(utf8_encoding, cLiquidSyntaxError, "Unexpected character %.*s", char_len, str);
     } else {
-        rb_raise(rb_eArgError, "invalid byte sequence in UTF-8");
+        rb_enc_raise(utf8_encoding, cLiquidSyntaxError, "Invalid byte sequence in UTF-8");
     }
 
     return NULL;

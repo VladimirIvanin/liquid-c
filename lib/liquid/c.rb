@@ -30,13 +30,6 @@ end
 
 module Liquid
   module C
-    # Placeholder for variables in the Liquid::C::BlockBody#nodelist.
-    class VariablePlaceholder
-      class << self
-        private :new
-      end
-    end
-
     class Tokenizer
       MAX_SOURCE_BYTE_SIZE = (1 << 24) - 1
     end
@@ -75,23 +68,15 @@ Liquid::ParseContext.class_eval do
   def new_tokenizer(source, start_line_number: nil, for_liquid_tag: false)
     unless liquid_c_nodes_disabled?
       source = source.to_s.to_str
-      if source.bytesize <= Liquid::C::Tokenizer::MAX_SOURCE_BYTE_SIZE
-        source = source.encode(Encoding::UTF_8)
-        return Liquid::C::Tokenizer.new(source, start_line_number || 0, for_liquid_tag)
+      encoded_source = source.encode(Encoding::UTF_8)
+      if encoded_source.bytesize <= Liquid::C::Tokenizer::MAX_SOURCE_BYTE_SIZE
+        return Liquid::C::Tokenizer.new(encoded_source, start_line_number || 0, for_liquid_tag)
       else
         @liquid_c_nodes_disabled = true
       end
     end
 
     ruby_new_tokenizer(source, start_line_number: start_line_number, for_liquid_tag: for_liquid_tag)
-  end
-
-  def parse_expression(markup)
-    if liquid_c_nodes_disabled?
-      Liquid::Expression.parse(markup)
-    else
-      Liquid::C::Expression.lax_parse(markup)
-    end
   end
 
   # @api private
@@ -134,57 +119,70 @@ module Liquid
 end
 
 Liquid::Variable.class_eval do
+  output_methods = [:render, :render_to_output_buffer, :render_obj_to_output]
+  source = File.join(Gem.loaded_specs.fetch("liquid").full_gem_path, "lib/liquid/variable.rb")
+  Liquid::C::VARIABLE_RENDERERS = output_methods.filter_map do |name|
+    original = instance_method(name)
+    original = original.super_method while original && original.owner != self
+    next unless original&.source_location&.first == source
+
+    define_method(:"ruby_#{name}", original)
+    [name, original, instance_method(:"c_#{name}")]
+  end.freeze
+
   class << self
-    # @api private
-    def call_variable_fallback_stats_callback(parse_context)
-      callbacks = parse_context[:stats_callbacks]
-      callbacks[:variable_fallback]&.call if callbacks
-    end
-
-    private
-
-    # helper method for C code
-    def rescue_strict_parse_syntax_error(error, markup, parse_context)
-      error.line_number = parse_context.line_number
-      error.markup_context = "in \"{{#{markup}}}\""
-      case parse_context.error_mode
-      when :strict
-        raise
-      when :warn
-        parse_context.warnings << error
+    def c_parse(markup, parse_context)
+      if /\A\s*-\.\d/.match?(markup)
+        Liquid::Usage.increment("liquid_c_negative_float_without_integer")
       end
-      call_variable_fallback_stats_callback(parse_context)
-      lax_parse(markup, parse_context) # Avoid redundant strict parse
-    end
-
-    def lax_parse(markup, parse_context)
-      old_error_mode = parse_context.error_mode
-      begin
-        set_error_mode(parse_context, :lax)
-        new(markup, parse_context)
-      ensure
-        set_error_mode(parse_context, old_error_mode)
-      end
-    end
-
-    def set_error_mode(parse_context, mode)
-      parse_context.instance_variable_set(:@error_mode, mode)
+      new(markup, parse_context)
     end
   end
 
   alias_method :ruby_strict_parse, :strict_parse
 
   def strict_parse(markup)
-    if parse_context.liquid_c_nodes_disabled?
-      ruby_strict_parse(markup)
+    result = liquid_c_native_parse(markup)
+    if result
+      @name, @filters = result
+      nil
     else
-      c_strict_parse(markup)
+      ruby_strict_parse(markup)
+    end
+  rescue Liquid::SyntaxError
+    if !parse_context.liquid_c_nodes_disabled? && [:lax, :warn].include?(parse_context.error_mode)
+      self.class.call_variable_fallback_stats_callback(parse_context)
+    end
+    raise
+  end
+
+  def c_compilable?
+    filters.all? do |_name, args, kwargs|
+      args.size + (kwargs ? 1 : 0) <= 254 && (!kwargs || kwargs.size <= 255)
+    end
+  end
+
+  class << self
+    # @api private
+    def call_variable_fallback_stats_callback(parse_context)
+      callbacks = parse_context[:stats_callbacks]
+      callbacks[:variable_fallback]&.call if callbacks
     end
   end
 end
 
 Liquid::StrainerTemplate.class_eval do
   class << self
+    original = instance_method(:add_filter)
+    original = original.super_method while original.owner != self
+    define_method(:ruby_add_filter, original)
+
+    def add_filter(filter)
+      result = ruby_add_filter(filter)
+      @filter_methods_hash&.replace(filter_methods.to_h { |name| [name.to_sym, true] })
+      result
+    end
+
     private
 
     def filter_methods_hash
@@ -220,10 +218,25 @@ Liquid::C::Expression.class_eval do
 end
 
 Liquid::Context.class_eval do
-  alias_method :ruby_parse_evaluate, :[]
-  alias_method :ruby_evaluate, :evaluate
-  alias_method :ruby_find_variable, :find_variable
-  alias_method :ruby_strict_variables=, :strict_variables=
+  native_methods = {
+    :[] => :c_parse_evaluate,
+    evaluate: :c_evaluate,
+    find_variable: :c_find_variable_kwarg,
+    :strict_variables= => :c_strict_variables=,
+    :strict_filters= => :c_strict_filters=,
+    :global_filter= => :c_global_filter=,
+    add_filters: :c_add_filters,
+  }
+  source = File.join(Gem.loaded_specs.fetch("liquid").full_gem_path, "lib/liquid/context.rb")
+  Liquid::C::CONTEXT_METHODS = native_methods.filter_map do |name, native_name|
+    original = instance_method(name)
+    original = original.super_method while original && original.owner != self
+    ruby_name = name == :[] ? :ruby_parse_evaluate : :"ruby_#{name}"
+    define_method(ruby_name, original)
+    next unless original.source_location&.first == source
+
+    [name, original, native_name]
+  end.freeze
 
   # This isn't entered often by Ruby (most calls stay in C via VariableLookup#evaluate)
   # so the wrapper method isn't costly.
@@ -232,18 +245,35 @@ Liquid::Context.class_eval do
   end
 
   def c_parse_evaluate(expression)
-    c_evaluate(Liquid::C::Expression.lax_parse(expression))
+    ruby_parse_evaluate(expression)
   end
 end
+
+module Liquid
+  module C
+    module ContextCopyPatch
+      private
+
+      def initialize_copy(other)
+        result = super
+        Liquid::C::VM.reset_context(self)
+        result
+      end
+    end
+  end
+end
+Liquid::Context.prepend(Liquid::C::ContextCopyPatch)
 
 Liquid::ResourceLimits.class_eval do
   class << self
     def new(limits)
-      if Liquid::C.enabled
+      if equal?(Liquid::ResourceLimits) && Liquid::C.enabled
         Liquid::C::ResourceLimits.new(
           limits[:render_length_limit],
           limits[:render_score_limit],
           limits[:assign_score_limit],
+          limits[:cumulative_render_score_limit],
+          limits[:cumulative_assign_score_limit],
         )
       else
         super
@@ -259,16 +289,29 @@ module Liquid
 
       def enabled=(value)
         @enabled = value
-        if value
-          Liquid::Context.send(:alias_method, :[], :c_parse_evaluate)
-          Liquid::Context.send(:alias_method, :evaluate, :c_evaluate)
-          Liquid::Context.send(:alias_method, :find_variable, :c_find_variable_kwarg)
-          Liquid::Context.send(:alias_method, :strict_variables=, :c_strict_variables=)
-        else
-          Liquid::Context.send(:alias_method, :[], :ruby_parse_evaluate)
-          Liquid::Context.send(:alias_method, :evaluate, :ruby_evaluate)
-          Liquid::Context.send(:alias_method, :find_variable, :ruby_find_variable)
-          Liquid::Context.send(:alias_method, :strict_variables=, :ruby_strict_variables=)
+        Liquid::C::VM.invalidate_contexts
+        Liquid::C::VARIABLE_RENDERERS.each do |name, ruby_method, native_method|
+          next if Liquid::Variable.frozen?
+
+          current = Liquid::Variable.instance_method(name)
+          current = current.super_method while current && current.owner != Liquid::Variable
+          expected = value ? ruby_method : native_method
+          if current == expected
+            replacement = value ? :"c_#{name}" : :"ruby_#{name}"
+            Liquid::Variable.alias_method(name, replacement)
+          end
+        end
+        Liquid::C::CONTEXT_METHODS.each do |name, ruby_method, native_name|
+          next if Liquid::Context.frozen?
+
+          current = Liquid::Context.instance_method(name)
+          current = current.super_method while current && current.owner != Liquid::Context
+          native_method = Liquid::Context.instance_method(native_name)
+          expected = value ? ruby_method : native_method
+          next unless current == expected
+
+          replacement = value ? native_method : ruby_method
+          Liquid::Context.define_method(name, replacement)
         end
       end
     end
@@ -276,3 +319,11 @@ module Liquid
     self.enabled = true
   end
 end
+
+require "liquid/c/native_parser"
+require "liquid/c/native_tags"
+require "liquid/c/native_values"
+
+# Parsing during require retains the original path until guards are ready.
+Liquid::C.native_enable_variable_frontend
+require "liquid/c/native_compiler"

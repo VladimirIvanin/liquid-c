@@ -11,7 +11,7 @@ ENV["DEBUG"] ||= "true"
 
 task default: [:test, :rubocop]
 
-task test: ["test:unit", "test:integration:all"]
+task test: ["test:compatibility"]
 
 namespace :test do
   task valgrind: ["test:unit:valgrind", "test:integration:valgrind:all"]

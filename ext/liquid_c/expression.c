@@ -60,12 +60,9 @@ static VALUE internal_expression_parse(parser_t *p)
     return expr_obj;
 }
 
-static VALUE expression_strict_parse(VALUE klass, VALUE markup)
+static VALUE expression_parse_pinned(VALUE opaque)
 {
-    if (NIL_P(markup))
-        return Qnil;
-
-    StringValue(markup);
+    VALUE markup = *(VALUE *)opaque;
     char *start = RSTRING_PTR(markup);
 
     parser_t p;
@@ -75,7 +72,23 @@ static VALUE expression_strict_parse(VALUE klass, VALUE markup)
     if (p.cur.type != TOKEN_EOS)
         rb_enc_raise(utf8_encoding, cLiquidSyntaxError, "[:%s] is not a valid expression", symbol_names[p.cur.type]);
 
+    RB_GC_GUARD(markup);
     return expr_obj;
+}
+
+static VALUE expression_unpin(VALUE opaque)
+{
+    rb_gc_unregister_address((VALUE *)opaque);
+    return Qnil;
+}
+
+static VALUE expression_strict_parse(VALUE klass, VALUE markup)
+{
+    if (NIL_P(markup)) return Qnil;
+    StringValue(markup);
+    markup = rb_str_dup_frozen(markup);
+    rb_gc_register_address(&markup);
+    return rb_ensure(expression_parse_pinned, (VALUE)&markup, expression_unpin, (VALUE)&markup);
 }
 
 VALUE expression_evaluate(VALUE self, VALUE context)
@@ -102,7 +115,8 @@ static VALUE expression_disassemble(VALUE self)
     return vm_assembler_disassemble(
         expression->code.instructions.data,
         expression->code.instructions.data_end,
-        &constants
+        &constants,
+        0
     );
 }
 

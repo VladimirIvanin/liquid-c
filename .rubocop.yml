@@ -6,7 +6,11 @@ require: rubocop-performance
 AllCops:
   Exclude:
     - 'vendor/bundle/**/*'
+    - 'local-test/**/*'
     - 'tmp/**/*'
+    - 'docs/**/*'
+    - 'test/fixtures/liquid_spec/**/*.rb'
+    - 'performance/theme/**/*'
 
 Style/GlobalVars:
   Exclude:

@@ -143,10 +143,11 @@ class ExpressionTest < Minitest::Test
     expression = Liquid::C::Expression.strict_parse("foo.bar[123]")
     assert_equal(<<~ASM, expression.disassemble)
       0x0000: find_static_var("foo")
-      0x0003: lookup_const_key("bar")
-      0x0006: push_int8(123)
-      0x0008: lookup_key
-      0x0009: leave
+      0x0005: lookup_const_key("bar")
+      0x000a: lookup_guard(3)
+      0x000f: push_int8(123)
+      0x0011: lookup_key
+      0x0012: leave
     ASM
   end
 
@@ -162,7 +163,7 @@ class ExpressionTest < Minitest::Test
     context = Liquid::Context.new({ "x" => 123, "y" => { 123 => 42 } })
 
     expr = Liquid::ParseContext.new.parse_expression("x")
-    assert_instance_of(Liquid::C::Expression, expr)
+    assert_instance_of(Liquid::VariableLookup, expr)
     assert_equal(123, context.evaluate(expr))
 
     expr = Liquid::ParseContext.new(disable_liquid_c_nodes: true).parse_expression("x")

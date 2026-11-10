@@ -1,0 +1,67 @@
+min_version = "2026.11.4"
+
+[env]
+GEM_HOME = false
+GEM_PATH = false
+
+[tools]
+ruby = "3.3.13"
+hk = "2.11.1"
+jactionlint = "2.5.0"
+betterleaks = "1.10.0"
+osv-scanner = "2.7.0"
+
+[tasks.setup]
+description = "Install gems and repository-local Git hooks"
+run = ["bundle install", "hk install --mise"]
+
+[tasks."lint:ruby"]
+description = "Check Ruby with the existing RuboCop rules"
+run = "bundle exec rubocop"
+
+[tasks."lint:workflows"]
+description = "Check GitHub Actions and Dependabot; fail on every finding"
+run = "jactionlint --strict-exit"
+
+[tasks."lint:hooks"]
+description = "Validate the hk configuration"
+run = "hk validate"
+
+[tasks.lint]
+description = "Check Ruby, GitHub Actions and Git hook configuration"
+depends = ["lint:ruby", "lint:workflows", "lint:hooks"]
+
+[tasks.format]
+description = "Apply safe RuboCop corrections with the existing rules"
+run = "bundle exec rubocop --autocorrect"
+
+[tasks.test]
+description = "Compile the extension and run the compatibility suite"
+env = { LIQUID_C_PEDANTIC = "true" }
+run = "bundle exec rake test"
+
+[tasks.valgrind]
+description = "Run unit and integration tests under Valgrind"
+run = "bundle exec rake test:valgrind"
+
+[tasks."secrets:staged"]
+description = "Scan staged additions for secrets"
+run = "betterleaks git --staged --redact"
+
+[tasks.secrets]
+description = "Scan all Git history for secrets"
+run = "betterleaks git --log-opts=--all --redact"
+
+[tasks.audit]
+description = "Scan locked gems for known vulnerabilities using OSV"
+run = "osv-scanner scan source --lockfile=Gemfile.lock"
+
+[tasks.check]
+description = "Run every check, including history, dependency audit and Valgrind"
+run = """
+status=0
+for task in lint secrets audit test valgrind; do
+  mise run "$task" || status=1
+done
+exit "$status"
+"""

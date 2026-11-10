@@ -2,8 +2,11 @@
 
 require "test_helper"
 require "bigdecimal"
+require_relative "../compatibility/context_audit_cases"
 
 class ContextTest < Minitest::Test
+  include CompatibilityContextAuditCases
+
   def test_evaluate_works_with_normal_values
     context = Liquid::Context.new
 
@@ -28,38 +31,19 @@ class ContextTest < Minitest::Test
     assert_equal(42, Liquid::Context.new({ "var" => 42 }).evaluate(Liquid::C::Expression.strict_parse("var")))
   end
 
-  def test_evaluating_a_variable_entirely_within_c
+  def test_native_expression_does_not_use_ruby_variable_lookup
     skip("TracePoint :call not yet supported") if RUBY_ENGINE == "truffleruby"
 
-    context = Liquid::Context.new({ "var" => 42 })
+    context = Liquid::Context.new("var" => 42)
     lookup = Liquid::C::Expression.strict_parse("var")
-    context.evaluate(lookup) # memoize vm_internal_new calls
-
-    called_ruby_method_count = 0
-    called_c_method_count = 0
-
-    test_thread = Thread.current
-    begin
-      call_trace = TracePoint.trace(:call) do |t|
-        unless t.self == TracePoint || t.self.is_a?(TracePoint) || Thread.current != test_thread
-          called_ruby_method_count += 1
-        end
-      end
-
-      c_call_trace = TracePoint.trace(:c_call) do |t|
-        unless t.self == TracePoint || t.self.is_a?(TracePoint) || Thread.current != test_thread
-          called_c_method_count += 1
-        end
-      end
-
-      context.evaluate(lookup)
-    ensure
-      call_trace&.disable
-      c_call_trace&.disable
+    context.evaluate(lookup)
+    ruby_lookups = []
+    trace = TracePoint.new(:call) do |event|
+      ruby_lookups << event.method_id if event.defined_class == Liquid::VariableLookup
     end
-
-    assert_equal(0, called_ruby_method_count)
-    assert_equal(1, called_c_method_count) # context.evaluate call
+    result = trace.enable { context.evaluate(lookup) }
+    assert_equal(42, result)
+    assert_empty(ruby_lookups)
   end
 
   class TestDrop < Liquid::Drop

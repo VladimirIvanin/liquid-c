@@ -9,8 +9,8 @@ void init_parser(parser_t *p, const char *str, const char *end)
 {
     p->str_end = end;
     p->cur.type = p->next.type = TOKEN_EOS;
-    p->str = lex_one(str, end, &p->cur);
-    p->str = lex_one(p->str, end, &p->next);
+    p->str = lex_one(str, end, &p->cur, TOKEN_EOS);
+    p->str = lex_one(p->str, end, &p->next, p->cur.type);
 }
 
 lexer_token_t parser_consume_any(parser_t *p)
@@ -18,7 +18,7 @@ lexer_token_t parser_consume_any(parser_t *p)
     lexer_token_t cur = p->cur;
     p->cur = p->next;
     p->next.type = TOKEN_EOS;
-    p->str = lex_one(p->str, p->str_end, &p->next);
+    p->str = lex_one(p->str, p->str_end, &p->next, p->cur.type);
     return cur;
 }
 
@@ -53,17 +53,12 @@ static VALUE parse_number(parser_t *p)
     VALUE out;
     lexer_token_t token = parser_must_consume(p, TOKEN_NUMBER);
 
-    // Set up sentinel for rb_cstr operations.
-    char tmp = *token.val_end;
-    *(char *)token.val_end = '\0';
-
+    VALUE string = token_to_rstr(token);
     if (token.flags & TOKEN_FLOAT_NUMBER) {
-        out = DBL2NUM(rb_cstr_to_dbl(token.val, 1));
+        out = DBL2NUM(rb_str_to_dbl(string, 1));
     } else {
-        out = rb_cstr_to_inum(token.val, 10, 1);
+        out = rb_str_to_inum(string, 10, 1);
     }
-
-    *(char *)token.val_end = tmp;
     return out;
 }
 
@@ -74,6 +69,7 @@ __attribute__((noreturn)) static void raise_invalid_expression_type(const char *
 
 static VALUE try_parse_constant_range(parser_t *p)
 {
+    if (ruby_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
     parser_t saved_state = *p;
 
     parser_must_consume(p, TOKEN_OPEN_ROUND);
@@ -133,6 +129,7 @@ static void parse_and_compile_variable_lookup(parser_t *p, vm_assembler_t *code)
         vm_assembler_add_find_static_variable(code, name);
     }
 
+    VALUE guards = rb_ary_new();
     while (true) {
         if (p->cur.type == TOKEN_OPEN_SQUARE) {
             parser_consume_any(p);
@@ -150,7 +147,11 @@ static void parse_and_compile_variable_lookup(parser_t *p, vm_assembler_t *code)
         } else {
             break;
         }
+        if (p->cur.type == TOKEN_OPEN_SQUARE || p->cur.type == TOKEN_DOT)
+            rb_ary_push(guards, SIZET2NUM(vm_assembler_add_lookup_guard(code)));
     }
+    for (long i = 0; i < RARRAY_LEN(guards); i++)
+        vm_assembler_patch_lookup_guard(code, NUM2SIZET(RARRAY_AREF(guards, i)));
 }
 
 static VALUE try_parse_literal(parser_t *p)
@@ -230,6 +231,7 @@ static void parse_and_compile_number(parser_t *p, vm_assembler_t *code)
 
 void parse_and_compile_expression(parser_t *p, vm_assembler_t *code)
 {
+    if (ruby_stack_check()) rb_raise(rb_eSysStackError, "stack level too deep");
     switch (p->cur.type) {
         case TOKEN_IDENTIFIER:
         {

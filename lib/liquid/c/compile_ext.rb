@@ -24,6 +24,7 @@ end
 Liquid::VariableLookup.class_eval do
   def compile_evaluate(code)
     code.add_find_variable(name)
+    guards = []
     lookups.each_with_index do |lookup, i|
       is_command = @command_flags & (1 << i) != 0
       if is_command
@@ -31,7 +32,9 @@ Liquid::VariableLookup.class_eval do
       else
         code.add_lookup_key(lookup)
       end
+      guards << code.add_lookup_guard if i + 1 < lookups.size
     end
+    guards.each { |guard| code.patch_lookup_guard(guard) }
   end
 end
 

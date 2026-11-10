@@ -10,3 +10,7 @@ instruments*.trace
 *.cpu
 *.object
 *.dSYM
+/docs/
+/.audit.Gemfile
+/.audit.Gemfile.lock
+/local-test/

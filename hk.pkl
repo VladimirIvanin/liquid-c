@@ -1,0 +1,30 @@
+amends "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Config.pkl"
+
+min_hk_version = "2.11.1"
+fail_fast = false
+
+hooks {
+  ["pre-commit"] {
+    fix = false
+    stage = false
+    stash = "git"
+    steps {
+      ["rubocop"] {
+        check = "mise run lint:ruby"
+      }
+      ["workflows"] {
+        check = "mise run lint:workflows"
+      }
+      ["secrets"] {
+        check = "mise run secrets:staged"
+      }
+    }
+  }
+  ["pre-push"] {
+    steps {
+      ["check"] {
+        check = "mise run check"
+      }
+    }
+  }
+}

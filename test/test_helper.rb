@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "minitest/mock"
+$LOAD_PATH.unshift(ENV["LIQUID_C_EXTENSION_DIR"]) if ENV["LIQUID_C_EXTENSION_DIR"]
 require "liquid/c"
 
 if GC.respond_to?(:verify_compaction_references)
@@ -8,14 +10,11 @@ if GC.respond_to?(:verify_compaction_references)
   # move objects around, helping to find object movement bugs.
   begin
     GC.verify_compaction_references(double_heap: true, toward: :empty)
+    # Enable auto-compaction in the GC if supported.
+    GC.auto_compact = true if GC.respond_to?(:auto_compact=)
   rescue NotImplementedError
     puts "W: GC compaction not suppported by platform"
   end
-end
-
-# Enable auto-compaction in the GC if supported.
-if GC.respond_to?(:auto_compact=)
-  GC.auto_compact = true
 end
 
 GC.stress = true if ENV["GC_STRESS"]

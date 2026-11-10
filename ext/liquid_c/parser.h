@@ -19,6 +19,7 @@ void parse_and_compile_expression(parser_t *p, vm_assembler_t *code);
 VALUE try_parse_constant_expression(parser_t *p);
 
 void liquid_define_parser(void);
+void liquid_define_native_parser(void);
 
 #endif
 

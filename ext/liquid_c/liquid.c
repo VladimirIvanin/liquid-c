@@ -78,6 +78,7 @@ RUBY_FUNC_EXPORTED void Init_liquid_c(void)
 
     liquid_define_tokenizer();
     liquid_define_parser();
+    liquid_define_native_parser();
     liquid_define_raw();
     liquid_define_resource_limits();
     liquid_define_expression();
@@ -85,6 +86,7 @@ RUBY_FUNC_EXPORTED void Init_liquid_c(void)
     liquid_define_document_body();
     liquid_define_block_body();
     liquid_define_context();
+    liquid_define_native_values();
     liquid_define_parse_context();
     liquid_define_variable_lookup();
     liquid_define_vm_assembler_pool();

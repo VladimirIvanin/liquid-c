@@ -3,13 +3,16 @@
 
 > ⚠️ **Warning: This project is no longer maintained. Use at your own risk and consider looking for alternatives or forks that are currently maintained.**
 
-Partial native implementation of the liquid ruby gem in C.
+Partial native implementation of Liquid 5.14.x in C. Compatibility tests use Liquid 5.14.0.
+
+The [compatibility corpus guide](test/fixtures/liquid_spec/README.md) documents
+slice hook/monkey-patch tests, the pinned external corpus, coverage, and reproduction commands.
 
 ## Installation
 
 Add these lines to your application's Gemfile:
 
-    gem 'liquid', github: 'Shopify/liquid', branch: 'main'
+    gem 'liquid', '~> 5.14.0'
     gem 'liquid-c', github: 'Shopify/liquid-c', branch: 'main'
 
 And then execute:
@@ -68,9 +71,45 @@ Calculating -------------------------------------
 
 ## Developing
 
-    bundle install
-    # run tests
-    bundle exec rake
+Install [mise 2026.11.4](https://mise.jdx.dev/getting-started.html), Ruby build
+prerequisites, a C compiler, make and Valgrind (Linux).
+
+```sh
+mise trust
+mise install
+mise run setup
+mise run check
+```
+
+Tool versions are pinned in `mise.toml`; Ruby stays at 3.3.13. The development
+bundle requires Ruby 3.2+ for the patched Nokogiri. RuboCop rules are unchanged.
+Pre-commit checks Ruby, workflows and staged secrets; pre-push runs the full
+check. CI also runs it on pull requests, pushes to `main` and weekly, including
+secret history and OSV scans. Dependabot updates gems and Actions weekly.
+
+### Extension compatibility tests
+
+`bundle exec rake test:compatibility:extensions` checks monkey patches, custom
+tags and blocks, filter overrides and reloading, decimal conversion, dynamic
+drops, layered registers, error recovery, and overlapping renders in two threads.
+The fixtures use synthetic data and require neither Rails nor an external app.
+Collection scenarios include parsing string conditions in `where_exp` and
+`find_exp`, nested filters inside `group_by_exp`, short circuit evaluation,
+and restoring bindings after errors. Mutable mapping drops, cached nested
+fragments, and clearing template assigns between payloads are also covered.
+Language scenarios exercise patched expression parsing, runtime expression
+objects, custom condition operators, component regions rendered through a
+runtime-created `render` tag, and parent block rendering from a drop.
+
+The suite is included in `bundle exec rake test`. It runs on pure Ruby and the
+`c`, `no_vm`, and `disabled` configurations in all four parser modes. Each parsed
+template checks its body class; patches installed before loading the extension
+are tested in a separate process with a timeout.
+
+```sh
+ENGINES=pure,c MODES=warn,strict bundle exec ruby test/compatibility/run.rb extensions
+TEST_SEED=90210 bundle exec rake test:compatibility:extensions
+```
 
 ## Contributing
 
