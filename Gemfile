@@ -21,7 +21,7 @@ group :test do
   gem "benchmark"
   gem "benchmark-ips"
   gem "ruby_memcheck"
-  gem "stackprof", require: false
+  gem "stackprof", "~> 0.2.28", require: false
 end
 
 group :development do

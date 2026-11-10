@@ -70,7 +70,7 @@ GEM
     simplecov-html (0.13.2)
     simplecov_json_formatter (0.1.4)
     spy (0.4.1)
-    stackprof (0.2.26)
+    stackprof (0.2.28)
     strscan (3.1.8)
     unicode-display_width (2.5.0)
     vernier (1.11.0)
@@ -98,7 +98,7 @@ DEPENDENCIES
   ruby_memcheck
   simplecov (~> 0.22.0)
   spy (= 0.4.1)
-  stackprof
+  stackprof (~> 0.2.28)
   vernier (~> 1.11.0)
 
 BUNDLED WITH
