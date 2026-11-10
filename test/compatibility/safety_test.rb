@@ -313,19 +313,23 @@ class Liquid514SafetyTest < Minitest::Test
   def test_native_render_avoids_ruby_hook_checks_per_block
     return unless Compatibility::ENGINE == "c"
 
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
     template = Liquid::Template.parse("{% for i in (1..1000) %}{% if i %}{{ i }}{% endif %}{% endfor %}")
     assert_instance_of(Liquid::C::BlockBody, template.root.body)
     assert_nil(Liquid::Context.instance_method(:evaluate).source_location)
-    calls = []
-    trace = TracePoint.new(:call, :c_call) do |event|
-      identity_check = [:c_native_render?, :instance_method].include?(event.method_id)
-      ruby_variable_render = event.event == :call && event.self.is_a?(Liquid::Variable) &&
-        [:render, :render_to_output_buffer, :render_obj_to_output].include?(event.method_id)
-      calls << event.method_id if identity_check || ruby_variable_render
+
+    gc_disabled = GC.disable
+    begin
+      methods_before = ObjectSpace.each_object(UnboundMethod).count
+      variables_before = ObjectSpace.each_object(Liquid::Variable).count
+      output = template.render!
+      assert_equal((1..1000).to_a.join, output)
+      assert_equal(methods_before, ObjectSpace.each_object(UnboundMethod).count)
+      assert_equal(variables_before, ObjectSpace.each_object(Liquid::Variable).count)
+    ensure
+      GC.enable unless gc_disabled
     end
-    output = trace.enable { template.render! }
-    assert_equal((1..1000).to_a.join, output)
-    assert_empty(calls)
   end
 
   def test_switching_engine_with_frozen_variable_class

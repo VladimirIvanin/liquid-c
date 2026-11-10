@@ -35,6 +35,10 @@ engines.product(names).each do |engine, name|
   results << result.merge(engine: engine, test: name)
   outcome = result[:summary] || "exit=#{result[:exitstatus]} signal=#{result[:signal]} timeout=#{result[:timeout]}"
   puts "#{label}: #{outcome}"
+  unless result[:success]
+    warn "#{label}: see #{result[:log]}"
+    warn File.read(result[:log])
+  end
   File.write(File.join(directory, "results.json"), JSON.pretty_generate(results) + "\n")
 end
 exit(results.all? { |result| result[:success] } ? 0 : 1)

@@ -2,8 +2,8 @@
 
 # Corpus-inspired synthetic comparison. The bench_* extensions below are identical
 # demonstration implementations in both engines.
-# CHECK_ONLY=1 ruby performance/insales_synthetic.rb ENGINES.json OUTPUT [pattern...]
-# taskset -c CORE ruby performance/insales_synthetic.rb ENGINES.json OUTPUT [pattern...]
+# CHECK_ONLY=1 ruby performance/fleur_synthetic.rb ENGINES.json OUTPUT [pattern...]
+# taskset -c CORE ruby performance/fleur_synthetic.rb ENGINES.json OUTPUT [pattern...]
 # Optional: PHASES=parse,render_first,render,parse_render ROUNDS=2 REPEATS=7
 # WARMUP=2 BATCH_SECONDS=1 FIRST_RENDER_BATCH=64 EXPRESSION_CACHE=default|off
 
@@ -23,8 +23,8 @@ unless ARGV.first == "--engine"
   harness = File.join(output, "harness")
   FileUtils.mkdir_p(harness)
   [
-    "insales_synthetic.rb",
-    "insales_synthetic_workloads.rb",
+    "fleur_synthetic.rb",
+    "fleur_synthetic_workloads.rb",
     "cross_engine.rb",
     "host_metrics.rb",
     "cross_compare.rb",
@@ -53,7 +53,7 @@ unless ARGV.first == "--engine"
         "OUT_DIR" => output,
       }
       path = File.join(output, "round-#{round + 1}-#{name}.jsonl")
-      command = [RbConfig.ruby, "--disable-yjit", File.join(harness, "insales_synthetic.rb"), "--engine", *patterns]
+      command = [RbConfig.ruby, "--disable-yjit", File.join(harness, "fleur_synthetic.rb"), "--engine", *patterns]
       File.open(path, "w") do |file|
         abort "#{name} failed; inspect #{path}" unless system(env, *command, out: file)
       end
@@ -125,7 +125,7 @@ end
 
 ARGV.shift
 require_relative "cross_engine"
-require_relative "insales_synthetic_workloads"
+require_relative "fleur_synthetic_workloads"
 abort "use Ruby 3.2 for the agreed comparison" unless RUBY_VERSION.start_with?("3.2.")
 configure_error_mode(:warn)
 cache_mode = ENV.fetch("EXPRESSION_CACHE", "default")
@@ -272,7 +272,7 @@ info = engine_info.merge(
   library_sha256: BENCH_CONFIGURATION["library"] && source_digest(BENCH_CONFIGURATION.fetch("library")),
   liquid_source_sha256: source_digest(File.join(BENCH_CONFIGURATION.fetch("liquid_root"), "lib")),
   harness_sha256: Digest::SHA256.hexdigest(
-    ["insales_synthetic.rb", "insales_synthetic_workloads.rb", "cross_engine.rb", "host_metrics.rb"].map do |name|
+    ["fleur_synthetic.rb", "fleur_synthetic_workloads.rb", "cross_engine.rb", "host_metrics.rb"].map do |name|
       name + "\0" + File.binread(File.join(__dir__, name))
     end.join("\0"),
   ),
