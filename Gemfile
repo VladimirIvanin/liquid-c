@@ -10,7 +10,6 @@ gemspec development_group: :test
 gem "liquid", github: "Shopify/liquid", ref: "4e39ae4cc3da73921923c0669e0fc84a66b2f696" # v5.14.0
 
 group :test do
-  gem "minitest", "~> 5.22"
   gem "simplecov", "~> 0.22.0", require: false
   gem "lru_redux", "~> 1.1"
   gem "nokogiri", "~> 1.19.7", force_ruby_platform: true

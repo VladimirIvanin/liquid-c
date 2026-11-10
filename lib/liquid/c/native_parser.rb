@@ -11,6 +11,9 @@ module Liquid
       native_source = if RUBY_ENGINE == "truffleruby"
         File.join(RbConfig::CONFIG.fetch("prefix"), "lib/truffle/truffle/cext_ruby.rb")
       end
+      scanner_source = if RUBY_ENGINE == "truffleruby"
+        File.join(Gem.loaded_specs.fetch("strscan").full_gem_path, "lib/strscan/truffleruby.rb")
+      end
       native_location = ->(location) { location.nil? || location == native_source }
       specifications = {
         Liquid::Variable => [:ruby_strict_parse, :parse_filterargs, :lax_parse_filter_expressions, :parse_context],
@@ -37,9 +40,14 @@ module Liquid
         names.map do |name|
           method = owner.instance_method(name)
           location = method.source_location&.first
-          standard = owner == StringScanner ? native_location.call(location) : location&.start_with?(source_root + "/")
+          standard = if owner == StringScanner
+            native_location.call(location) || location == scanner_source
+          else
+            location&.start_with?(source_root + "/")
+          end
           if owner == Integer || owner == Array
-            standard = native_location.call(location) || location == "<internal:numeric>" || location == "<internal:array>" ||
+            internal_source = owner == Integer ? "<internal:numeric>" : "<internal:array>"
+            standard = native_location.call(location) || location == internal_source ||
               (RUBY_ENGINE == "truffleruby" && location&.start_with?("<internal:core> "))
           end
           if (owner == Liquid::ParseContext && name == :liquid_c_nodes_disabled?) || owner == Liquid::C.singleton_class

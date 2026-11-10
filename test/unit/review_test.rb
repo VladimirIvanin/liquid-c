@@ -19,6 +19,7 @@ class ReviewTest < Minitest::Test
   end
 
   def test_numeric_parse_does_not_mutate_source_when_warning_raises
+    skip("float overflow warnings are specific to MRI") unless RUBY_ENGINE == "ruby"
     [false, true].each do |frozen|
       source = "(" + "9" * 400 + ".0..x)"
       before = source.dup
@@ -38,6 +39,7 @@ class ReviewTest < Minitest::Test
   end
 
   def test_numeric_parse_keeps_snapshot_when_warning_mutates_input
+    skip("float overflow warnings are specific to MRI") unless RUBY_ENGINE == "ruby"
     source = "9" * 400 + ".0"
     callback = ->(*) {
       source.replace("x")

@@ -948,17 +948,25 @@ class NativeCompilerTest < Minitest::Test
   def test_gc_finalizer_method_changes_are_visible_after_a_tag
     isolated(<<~RUBY)
       original = Liquid::Variable.instance_method(:initialize)
+      finalized = Queue.new
       callback = proc do
         Liquid::Variable.define_method(:initialize) do |markup, context|
           original.bind_call(self, markup, context)
           @filters << ["append", ["!"]]
         end
+        finalized << true
       end
       tag = Class.new(Liquid::Tag) do
         define_method(:initialize) do |*args|
           super(*args)
           Thread.new { ObjectSpace.define_finalizer(Object.new, callback); nil }.join
           GC.start
+          deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+          while finalized.empty?
+            raise "finalizer did not run" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+            sleep 0.01
+            GC.start
+          end
         end
       end
       env = Liquid::Environment.build { |e| e.register_tag("collect", tag) }

@@ -147,6 +147,7 @@ class AuditRegressionTest < Minitest::Test
   end
 
   def test_raw_embedded_string_survives_compaction_in_blank_callback
+    skip("GC compaction is unavailable") unless GC.respond_to?(:verify_compaction_references)
     return isolate(__method__) unless ENV["LIQUID_AUDIT_CASE"] == __method__.to_s
 
     before = GC.stat(:total_moved_objects)
@@ -164,6 +165,7 @@ class AuditRegressionTest < Minitest::Test
   end
 
   def test_expression_source_is_pinned_across_conversion_callbacks
+    skip("GC compaction is unavailable") unless GC.respond_to?(:verify_compaction_references)
     return isolate(__method__) unless ENV["LIQUID_AUDIT_CASE"] == __method__.to_s
 
     before = GC.stat(:total_moved_objects)
@@ -199,12 +201,18 @@ class AuditRegressionTest < Minitest::Test
       print Liquid::Template.parse("ok").render!
     RUBY
     log = "tmp/audit/deep-#{Process.pid}.log"
+    command = [RbConfig.ruby, "-Ilib", "-e", code]
+    spawn_options = { rlimit_stack: 8 * 1024 * 1024 }
+    if RUBY_ENGINE == "truffleruby"
+      command = ["sh", "-c", 'ulimit -s 8192 && exec "$@"', "liquid-c-stack", *command]
+      spawn_options = {}
+    end
     result = Compatibility::ProcessRunner.run(
-      [RbConfig.ruby, "-Ilib", "-e", code],
+      command,
       env: {},
       log: log,
       timeout: 60,
-      spawn_options: { rlimit_stack: 8 * 1024 * 1024 },
+      spawn_options: spawn_options,
     )
     assert(result[:success], "#{result.inspect}\n#{File.read(log)}")
     assert_equal("ok ok ok ok", File.read(log))

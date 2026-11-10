@@ -67,7 +67,9 @@ bool liquid_method_basic_definition_p(VALUE klass, ID method)
     }
     RB_GC_GUARD(definition);
     RB_GC_GUARD(location);
-    return builtin && name == ID2SYM(method);
+    bool original_name_matches = name == ID2SYM(method) ||
+        (method == rb_intern("send") && name == ID2SYM(rb_intern("__send__")));
+    return builtin && original_name_matches;
 }
 #endif
 
