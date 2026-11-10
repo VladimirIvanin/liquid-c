@@ -28,11 +28,6 @@ inline static int is_non_newline_space(int c)
     return rb_isspace(c) && c != '\n';
 }
 
-inline static int not_newline(int c)
-{
-    return c != '\n';
-}
-
 inline static bool is_word_char(char c)
 {
     return ISALNUM(c) || c == '_';

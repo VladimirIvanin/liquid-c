@@ -100,7 +100,8 @@ static void tokenizer_next_for_liquid_tag(tokenizer_t *tokenizer, token_t *token
     token->str_full = start;
     token->str_trimmed = start_trimmed;
 
-    const char *end_full = read_while(start_trimmed, end, not_newline);
+    const char *end_full = memchr(start_trimmed, '\n', (size_t)(end - start_trimmed));
+    if (!end_full) end_full = end;
     if (end_full < end) {
         tokenizer->cursor = end_full + 1;
     } else {

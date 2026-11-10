@@ -206,7 +206,7 @@ class AuditRegressionTest < Minitest::Test
       timeout: 60,
       spawn_options: { rlimit_stack: 8 * 1024 * 1024 },
     )
-    assert(result[:success], File.read(log))
+    assert(result[:success], "#{result.inspect}\n#{File.read(log)}")
     assert_equal("ok ok ok ok", File.read(log))
   end
 
