@@ -32,13 +32,6 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
       - run: bundle exec rake test:compatibility:corpus test:compatibility:slice_coverage
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: full-corpus
-          path: |
-            tmp/compatibility/corpus-full
-            tmp/coverage/ruby-utils
 
   test:
     if: github.event_name != 'schedule'
@@ -51,6 +44,7 @@ jobs:
           - { ruby: '3.2', allowed-failure: false }
           - { ruby: '3.3', allowed-failure: false }
           - { ruby: '3.4', allowed-failure: false }
+          - { ruby: '4.0', allowed-failure: false }
           - { ruby: ruby-head, allowed-failure: true }
           - { ruby: truffleruby-head, allowed-failure: true }
     name: test (${{ matrix.ruby }})
@@ -61,7 +55,7 @@ jobs:
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
         with:
           ruby-version: ${{ matrix.ruby }}
-          bundler: ${{ matrix.ruby == 'ruby-head' && 'latest' || 'Gemfile.lock' }}
+          bundler: ${{ (matrix.ruby == '4.0' || contains(matrix.ruby, 'head')) && 'latest' || 'Gemfile.lock' }}
           bundler-cache: true
 
       - run: bundle exec rake
@@ -77,12 +71,6 @@ jobs:
 
       - run: bundle exec rubocop
         if: matrix.ruby != 'truffleruby-head'
-
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: compatibility-${{ matrix.ruby }}
-          path: tmp/compatibility
 
   check:
     name: Full check
@@ -110,8 +98,3 @@ jobs:
           sudo apt-get install --no-install-recommends -y build-essential valgrind
       - run: bundle exec rake test:compatibility:sanitizers
       - run: mise run check
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: always()
-        with:
-          name: compatibility-check
-          path: tmp/compatibility

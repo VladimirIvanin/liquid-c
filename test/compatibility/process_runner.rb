@@ -30,6 +30,9 @@ module Compatibility
           sleep(0.05)
         end
         output = File.binread(log).force_encoding(Encoding::UTF_8).scrub
+        unless status.success? && !timed_out
+          warn("Command failed: #{command.shelljoin} (log: #{log})\n#{output}")
+        end
         {
           command: command.shelljoin,
           env: env,

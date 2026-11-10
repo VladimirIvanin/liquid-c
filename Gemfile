@@ -22,10 +22,10 @@ group :test do
   gem "benchmark"
   gem "benchmark-ips"
   gem "ruby_memcheck"
+  gem "stackprof", require: false
 end
 
 group :development do
   gem "byebug"
-  gem "stackprof", require: false
   gem "vernier", "~> 1.11.0", require: false
 end

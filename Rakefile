@@ -7,6 +7,8 @@ require "rake/extensiontask"
 require "benchmark"
 require "ruby_memcheck"
 
+RubyMemcheck.config(binary_name: "liquid_c")
+
 ENV["DEBUG"] ||= "true"
 
 task default: [:test, :rubocop]
