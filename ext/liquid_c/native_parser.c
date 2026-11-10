@@ -32,6 +32,21 @@ static VALUE native_expression_class, native_parser_class, native_condition_clas
 static VALUE native_hash_readers[3];
 enum { HASH_IDENTITY_READER, HASH_DEFAULT_PROC_READER, HASH_DEFAULT_READER };
 
+#ifndef HAVE_RB_AUTOLOAD_P
+static VALUE native_autoload_reader = Qnil;
+#endif
+
+static VALUE native_autoload_p(VALUE owner, ID name)
+{
+#ifdef HAVE_RB_AUTOLOAD_P
+    return rb_autoload_p(owner, name);
+#else
+    if (NIL_P(native_autoload_reader)) return Qtrue;
+    VALUE args[] = { owner, ID2SYM(name), Qfalse };
+    return rb_method_call(3, args, native_autoload_reader);
+#endif
+}
+
 // Stored builtin bodies read Hash metadata without invoking application
 // overrides. Public Method APIs avoid depending on MRI's Hash layout.
 static VALUE native_hash_property(VALUE hash, size_t reader)
@@ -56,7 +71,7 @@ static VALUE native_capture_constant(VALUE owner, const char *name)
 {
     ID id = rb_intern(name);
     if (!RB_TYPE_P(owner, T_CLASS) && !RB_TYPE_P(owner, T_MODULE)) return Qnil;
-    if (!rb_const_defined_at(owner, id) || RTEST(rb_autoload_p(owner, id))) return Qnil;
+    if (!rb_const_defined_at(owner, id) || RTEST(native_autoload_p(owner, id))) return Qnil;
     return rb_const_get_at(owner, id);
 }
 
@@ -82,7 +97,7 @@ static VALUE native_constant_matches(VALUE self, VALUE owner, VALUE name, VALUE 
     if (!RB_TYPE_P(owner, T_CLASS) && !RB_TYPE_P(owner, T_MODULE)) return Qfalse;
     Check_Type(name, T_SYMBOL);
     ID id = SYM2ID(name);
-    if (!rb_const_defined_at(owner, id) || RTEST(rb_autoload_p(owner, id)) || rb_const_get_at(owner, id) != expected) return Qfalse;
+    if (!rb_const_defined_at(owner, id) || RTEST(native_autoload_p(owner, id)) || rb_const_get_at(owner, id) != expected) return Qfalse;
     if (!NIL_P(snapshot)) {
         if (!RB_TYPE_P(expected, T_ARRAY) || !RB_TYPE_P(snapshot, T_ARRAY) || RARRAY_LEN(expected) != RARRAY_LEN(snapshot)) return Qfalse;
         for (long i = 0; i < RARRAY_LEN(expected); i++)
@@ -1870,7 +1885,7 @@ static bool native_control_binding(VALUE lexical_owner, ID name, VALUE expected)
     for (size_t i = 0; i < sizeof(lexical) / sizeof(lexical[0]); i++) {
         VALUE owner = lexical[i];
         if (rb_const_defined_at(owner, name))
-            return !RTEST(rb_autoload_p(owner, name)) && rb_const_get_at(owner, name) == expected;
+            return !RTEST(native_autoload_p(owner, name)) && rb_const_get_at(owner, name) == expected;
     }
     // The full ancestor prefix is verified by the control guard. Looking only
     // at defined constants cannot trigger autoload or const_missing callbacks.
@@ -1886,7 +1901,7 @@ static bool native_control_binding(VALUE lexical_owner, ID name, VALUE expected)
     for (long i = 1; i < RARRAY_LEN(prefix); i++) {
         VALUE owner = RARRAY_AREF(prefix, i);
         if (rb_const_defined_at(owner, name))
-            return !RTEST(rb_autoload_p(owner, name)) && rb_const_get_at(owner, name) == expected;
+            return !RTEST(native_autoload_p(owner, name)) && rb_const_get_at(owner, name) == expected;
     }
     return false;
 }
@@ -2307,6 +2322,18 @@ void liquid_define_native_parser(void)
     VALUE *roots[] = { &native_expression_class, &native_parser_class, &native_condition_class, &native_literals, &native_unbound_class };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) rb_global_variable(roots[i]);
     native_unbound_class = Qnil;
+#ifndef HAVE_RB_AUTOLOAD_P
+    rb_global_variable(&native_autoload_reader);
+    ID autoload_query = rb_intern("autoload?"), module_instance_method = rb_intern("instance_method");
+    if (rb_method_basic_definition_p(CLASS_OF(rb_cModule), module_instance_method) &&
+        rb_method_basic_definition_p(rb_cModule, autoload_query)) {
+        VALUE unbound = rb_funcall(rb_cModule, module_instance_method, 1, ID2SYM(autoload_query));
+        ID reader_bind_call = rb_intern("bind_call");
+        if (rb_method_basic_definition_p(CLASS_OF(unbound), reader_bind_call))
+            native_autoload_reader = rb_obj_method(unbound, ID2SYM(reader_bind_call));
+        RB_GC_GUARD(unbound);
+    }
+#endif
     native_expression_class = native_capture_constant(mLiquid, "Expression");
     native_parser_class = native_capture_constant(mLiquid, "Parser");
     native_condition_class = native_capture_constant(mLiquid, "Condition");

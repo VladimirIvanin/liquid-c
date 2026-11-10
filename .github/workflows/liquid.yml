@@ -51,7 +51,6 @@ jobs:
           - { ruby: '3.2', allowed-failure: false }
           - { ruby: '3.3', allowed-failure: false }
           - { ruby: '3.4', allowed-failure: false }
-          - { ruby: '4.0', allowed-failure: false }
           - { ruby: ruby-head, allowed-failure: true }
           - { ruby: truffleruby-head, allowed-failure: true }
     name: test (${{ matrix.ruby }})
@@ -62,6 +61,7 @@ jobs:
       - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
         with:
           ruby-version: ${{ matrix.ruby }}
+          bundler: ${{ matrix.ruby == 'ruby-head' && 'latest' || 'Gemfile.lock' }}
           bundler-cache: true
 
       - run: bundle exec rake

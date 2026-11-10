@@ -247,6 +247,20 @@ class NativeParserTest < Minitest::Test
     RUBY
   end
 
+  def test_constant_guard_checks_autoload_without_calling_owner_override
+    owner = Module.new
+    owner.autoload(:NativeGuardProbe, "must-not-be-loaded-by-guard")
+    owner.define_singleton_method(:autoload?) { |*| raise "autoload? override was called" }
+
+    refute(Liquid::C.native_constant_matches?(owner, :NativeGuardProbe, Object, nil))
+    autoload_path = Module.instance_method(:autoload?).bind_call(owner, :NativeGuardProbe, false)
+    assert_equal("must-not-be-loaded-by-guard", autoload_path)
+
+    owner.send(:remove_const, :NativeGuardProbe)
+    owner.const_set(:NativeGuardProbe, Object)
+    assert(Liquid::C.native_constant_matches?(owner, :NativeGuardProbe, Object, nil))
+  end
+
   def test_primitive_change_during_native_allocation_discards_result
     skip("requires instrumented native build") unless Liquid::C.respond_to?(:native_parser_test_callback=)
 

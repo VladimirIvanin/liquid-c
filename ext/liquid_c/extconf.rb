@@ -22,6 +22,7 @@ else
 end
 
 have_func "rb_hash_bulk_insert"
+have_func "rb_autoload_p"
 # Link tests against a static libruby can find hidden symbols which extensions
 # cannot resolve at load time (MRI 3.3+). Probe the running process as well.
 begin
