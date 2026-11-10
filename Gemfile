@@ -5,7 +5,7 @@ git_source(:github) do |repo_name|
   "https://github.com/#{repo_name}.git"
 end
 
-gemspec
+gemspec development_group: :test
 
 gem "liquid", github: "Shopify/liquid", ref: "4e39ae4cc3da73921923c0669e0fc84a66b2f696" # v5.14.0
 
@@ -19,11 +19,13 @@ group :test do
   gem "rubocop-performance", "~> 1.13.2", require: false
   gem "rubocop-shopify", "~> 2.15.1", require: false
   gem "spy", "0.4.1"
+  gem "benchmark"
   gem "benchmark-ips"
   gem "ruby_memcheck"
 end
 
 group :development do
   gem "byebug"
+  gem "stackprof", require: false
   gem "vernier", "~> 1.11.0", require: false
 end
