@@ -34,18 +34,52 @@ then just use the documented API for the liquid Gem.
 
 ## Performance
 
-To compare this fork with plain Liquid, build the extension in release mode and run:
+This fork targets performance without YJIT. Results without JIT are shown first;
+YJIT results are included separately for comparison.
+
+Build the extension in release mode before measuring:
 
 ```sh
 DEBUG=false bundle exec rake clean compile
+```
+
+Both comparisons use Ruby 3.3.13, Liquid 5.14.0 and an AMD Ryzen 7 5700U
+(x86_64 Linux), with the extension at revision `caa4ed5`. Each operation has a
+10-second warmup and a 20-second measurement. Plain Liquid runs first, followed
+by Liquid C, in separate processes with `lax` parsing.
+
+### Without YJIT (primary target)
+
+```sh
+bundle exec ruby --disable-yjit -Ilib performance/benchmark_no_yjit.rb bare
+bundle exec ruby --disable-yjit -Ilib performance/benchmark_no_yjit.rb c
+```
+
+This runner uses Liquid's ThemeRunner and the same four operations as the
+upstream benchmark, without its call to `RubyVM::YJIT.enable`. It aborts if
+YJIT is enabled; passing `--disable-yjit` to the upstream benchmark alone does
+not prevent it from enabling YJIT again.
+
+Local results measured across 2026-11-10–11 (Europe/Moscow):
+
+| Operation | Plain Liquid (i/s) | Liquid C (i/s) |
+| --- | ---: | ---: |
+| tokenize | 392.897 (±14.0%) | 444.975 (±10.3%) |
+| parse | 17.560 (±17.1%) | 26.617 (±7.5%) |
+| render | 59.220 (±15.2%) | 80.809 (±11.1%) |
+| parse & render | 14.176 (±14.1%) | 20.077 (±10.0%) |
+
+In this run, Liquid C was about 1.52× faster for parse, 1.36× for render and
+1.42× for parse & render.
+
+### With YJIT
+
+```sh
 bundle exec rake compare:lax
 ```
 
-The following local results were measured on 2026-11-10 at revision `caa4ed5`,
-using Ruby 3.3.13, Liquid 5.14.0 and an AMD Ryzen 7 5700U (x86_64 Linux).
-The Liquid benchmark enables YJIT in both processes. Each operation has a
-10-second warmup and a 20-second measurement; plain Liquid runs first, followed
-by Liquid C, in separate processes with `lax` parsing.
+The upstream Liquid benchmark enables YJIT in both processes. Local results
+measured on 2026-11-10:
 
 | Operation | Plain Liquid (i/s) | Liquid C (i/s) |
 | --- | ---: | ---: |
@@ -54,14 +88,15 @@ by Liquid C, in separate processes with `lax` parsing.
 | render | 136.508 (±16.1%) | 98.799 (±8.1%) |
 | parse & render | 31.155 (±12.8%) | 25.943 (±7.7%) |
 
-These are indicative results from one local run with substantial variability,
-not a general speedup claim. Liquid C was slower for render and parse & render
-in this run. Repeat measurements on your own workload before drawing conclusions.
+These are indicative results from local runs, not a general speedup claim.
+Both comparisons have substantial variability. With YJIT, Liquid C was slower
+for render and parse & render in this run. Repeat measurements on your own workload before
+drawing conclusions.
 The previous Ruby 3.0.2 results came from the original Liquid C README and did
 not measure this fork; the runtime and benchmark have also changed since then.
 
 See the [benchmark guide](performance/README.md) for controlled, repeated
-measurements, including runs without YJIT and comparisons between engine versions.
+measurements and comparisons between engine versions.
 
 ## Developing
 
