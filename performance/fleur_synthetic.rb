@@ -97,6 +97,7 @@ unless ARGV.first == "--engine"
     end
     item = { "scenario" => scenario, "mode" => phase, "engines" => engines }
     if engines.dig("current", "median_ms") && engines.dig("legacy", "median_ms")
+      item["speedup"] = engines["legacy"]["median_ms"] / engines["current"]["median_ms"]
       item["current_over_legacy"] = engines["current"]["median_ms"] / engines["legacy"]["median_ms"]
     end
     item

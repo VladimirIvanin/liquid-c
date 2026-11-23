@@ -26,7 +26,7 @@ variants = {
   },
 }
 command = [RbConfig.ruby]
-command << "--yjit" if ENV["BENCH_YJIT"] == "true"
+command << (ENV["BENCH_YJIT"] == "true" ? "--yjit" : "--disable-yjit")
 command.push("-Ilib", "performance/measure.rb")
 list, error, status = Open3.capture3(variants.fetch("current"), *command, "--list")
 abort error unless status.success?

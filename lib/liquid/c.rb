@@ -108,9 +108,12 @@ Liquid::ParseContext.class_eval do
       encoded_source = source.encode(Encoding::UTF_8)
       if encoded_source.bytesize <= Liquid::C::Tokenizer::MAX_SOURCE_BYTE_SIZE
         return Liquid::C::Tokenizer.new(encoded_source, start_line_number || 0, for_liquid_tag)
-      else
-        @liquid_c_nodes_disabled = true
       end
+
+      tokenizer = ruby_new_tokenizer(source, start_line_number: start_line_number, for_liquid_tag: for_liquid_tag)
+      tokenizer.instance_variable_set(:@liquid_c_fallback_context, self)
+      @liquid_c_nodes_disabled = true
+      return tokenizer
     end
 
     ruby_new_tokenizer(source, start_line_number: start_line_number, for_liquid_tag: for_liquid_tag)
@@ -145,6 +148,13 @@ module Liquid
             super
           ensure
             parse_context.cleanup_liquid_c_parsing
+          end
+        elsif tokenizer.instance_variable_get(:@liquid_c_fallback_context).equal?(parse_context)
+          begin
+            parse_context.instance_variable_set(:@liquid_c_nodes_disabled, true)
+            super
+          ensure
+            parse_context.remove_instance_variable(:@liquid_c_nodes_disabled)
           end
         else
           super

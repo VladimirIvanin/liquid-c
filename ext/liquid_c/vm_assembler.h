@@ -128,7 +128,7 @@ static inline uint32_t vm_assembler_write_ruby_constant(vm_assembler_t *code, VA
         c_buffer_reserve_for_write(&code->constants, sizeof(VALUE));
         st_insert(constants_table, constant, index);
         c_buffer_write(&code->constants, &constant, sizeof(VALUE));
-        return index;
+        return (uint32_t)index;
     }
 }
 

@@ -1,113 +1,80 @@
 # Liquid::C
-[![Build Status](https://travis-ci.org/Shopify/liquid-c.svg?branch=main)](https://travis-ci.org/Shopify/liquid-c)
 
-> ⚠️ **Warning: This project is no longer maintained. Use at your own risk and consider looking for alternatives or forks that are currently maintained.**
-
-Partial native implementation of Liquid 5.14.x in C. Compatibility tests use Liquid 5.14.0.
-
-The [compatibility corpus guide](test/fixtures/liquid_spec/README.md) documents
-slice hook/monkey-patch tests, the pinned external corpus, coverage, and reproduction commands.
+This fork accelerates parsing and rendering with the Liquid 5.14.0 Ruby API.
+The native compiler depends on the internal layout of this Liquid release.
 
 ## Installation
 
-Add these lines to your application's Gemfile:
+```ruby
+gem "liquid", "= 5.14.0"
+gem "liquid-c", github: "VladimirIvanin/liquid-c", branch: "main"
+```
 
-    gem 'liquid', '~> 5.14.0'
-    gem 'liquid-c', github: 'Shopify/liquid-c', branch: 'main'
+Run `bundle install` and load the extension before parsing templates.
 
-And then execute:
+```ruby
+require "liquid/c"
 
-    $ bundle
+template = Liquid::Template.parse("Hello, {{ customer.name }}")
+template.render!("customer" => { "name" => "Ada" }) # => "Hello, Ada"
+```
 
-## Usage
+## Compatibility
 
-    require 'liquid/c'
+The C tokenizer takes UTF-8 input. Templates larger than 16,777,215 bytes
+after UTF-8 conversion use the Ruby parser for that document. Custom tags
+receive a tokenizer with a `shift` method. Profiling and the
+`disable_liquid_c_nodes: true` parse option select Ruby nodes.
+Set `Liquid::C.enabled` at application boot when choosing an engine for the
+whole process.
 
-then just use the documented API for the liquid Gem.
+The guarded native compiler for built-in tags requires MRI 3.2 and compatible
+Liquid methods. A registered subclass of `Liquid::Include` keeps its own parse
+and render behavior. Other Ruby versions can still use the C tokenizer, block
+body and rendering VM. To inspect variable parser decisions for a template,
+pass a hash as the `native_parser_stats:` parse option. The parser populates
+it with counts such as `accepted` and `guard_cost`.
 
-## Restrictions
-
-* Input strings are assumed to be UTF-8 encoded strings
-* Tag#parse(tokens) is given a Liquid::Tokenizer object, instead
-  of an array of strings, which only implements the shift method
-  to get the next token.
+Whitespace trimming follows Liquid 5.14.0 by default. Templates that depend on
+historical liquid-c whitespace trimming can opt in during parsing with
+`bug_compatible_whitespace_trimming: true`.
 
 ## Performance
 
-This fork targets performance without YJIT. Results without JIT are shown first;
-YJIT results are included separately for comparison.
-
-Build the extension in release mode before measuring:
+The repository includes deterministic storefront workloads and expected output.
+The example below compares plain Liquid 5.14.0 with this extension on the same
+Ruby, with YJIT disabled. It uses the nested-include and filter-chain fixtures.
 
 ```sh
+mkdir -p tmp/bench
 DEBUG=false bundle exec rake clean compile
+BENCH_ENGINE=pure bundle exec ruby --disable-yjit -Ilib performance/measure.rb nested_include/small filter_chain/small > tmp/bench/pure.jsonl
+bundle exec ruby --disable-yjit -Ilib performance/measure.rb nested_include/small filter_chain/small > tmp/bench/current.jsonl
+bundle exec ruby performance/compare.rb tmp/bench/pure.jsonl tmp/bench/current.jsonl
 ```
 
-Both comparisons use Ruby 3.3.13, Liquid 5.14.0 and an AMD Ryzen 7 5700U
-(x86_64 Linux), with the extension at revision `caa4ed5`. Each operation has a
-10-second warmup and a 20-second measurement. Plain Liquid runs first, followed
-by Liquid C, in separate processes with `lax` parsing.
+Each row reports the median time per operation over five samples. Parse builds
+the root template. Render reuses a parsed root with a fresh partial cache.
+Parse-and-render includes both operations. Speedup is the plain Ruby median
+divided by the extension median. Values above one indicate a faster extension.
+The runner checks each fixture's output.
 
-### Without YJIT (primary target)
+On MRI 3.3.13 (x86-64 Linux, YJIT off), the two render fixtures gave the
+following allocation counts, rounded to the nearest object per render.
 
-```sh
-bundle exec ruby --disable-yjit -Ilib performance/benchmark_no_yjit.rb bare
-bundle exec ruby --disable-yjit -Ilib performance/benchmark_no_yjit.rb c
-```
-
-This runner uses Liquid's ThemeRunner and the same four operations as the
-upstream benchmark, without its call to `RubyVM::YJIT.enable`. It aborts if
-YJIT is enabled; passing `--disable-yjit` to the upstream benchmark alone does
-not prevent it from enabling YJIT again.
-
-Local results measured across 2026-11-10–11 (Europe/Moscow):
-
-`i/s` means benchmark iterations per second; each iteration processes the
-entire ThemeRunner corpus for the listed operation. **Higher is better.**
-
-| Operation | Plain Liquid (i/s) | Liquid C (i/s) |
+| Fixture | Plain Liquid | Liquid C |
 | --- | ---: | ---: |
-| tokenize | 392.897 (±14.0%) | 444.975 (±10.3%) |
-| parse | 17.560 (±17.1%) | 26.617 (±7.5%) |
-| render | 59.220 (±15.2%) | 80.809 (±11.1%) |
-| parse & render | 14.176 (±14.1%) | 20.077 (±10.0%) |
+| `filter_chain/small` | 870 | 510 |
+| `nested_include/small` | 800 | 855 |
 
-In this run, Liquid C was about 1.52× faster for parse, 1.36× for render and
-1.42× for parse & render.
-
-### With YJIT
-
-```sh
-bundle exec rake compare:lax
-```
-
-The upstream Liquid benchmark enables YJIT in both processes. Local results
-measured on 2026-11-10:
-
-`i/s` means benchmark iterations per second; each iteration processes the
-entire ThemeRunner corpus for the listed operation. **Higher is better.**
-
-| Operation | Plain Liquid (i/s) | Liquid C (i/s) |
-| --- | ---: | ---: |
-| tokenize | 923.852 (±12.1%) | 923.821 (±6.6%) |
-| parse | 41.639 (±12.0%) | 40.002 (±7.5%) |
-| render | 136.508 (±16.1%) | 98.799 (±8.1%) |
-| parse & render | 31.155 (±12.8%) | 25.943 (±7.7%) |
-
-These are indicative results from local runs, not a general speedup claim.
-Both comparisons have substantial variability. With YJIT, Liquid C was slower
-for render and parse & render in this run. Repeat measurements on your own workload before
-drawing conclusions.
-The previous Ruby 3.0.2 results came from the original Liquid C README and did
-not measure this fork; the runtime and benchmark have also changed since then.
-
-See the [benchmark guide](performance/README.md) for controlled, repeated
-measurements and comparisons between engine versions.
+The benchmark guide also covers
+larger scenarios, Hash and Drop inputs, and cold and warm partial caches.
+[Benchmark guide](performance/README.md)
 
 ## Developing
 
-Install [mise 2026.11.4](https://mise.jdx.dev/getting-started.html), Ruby build
-prerequisites, a C compiler, make and Valgrind (Linux).
+Install the tools pinned in `mise.toml`, Ruby build prerequisites, a C compiler,
+make and Valgrind (Linux). The development bundle uses Ruby 3.3.13.
 
 ```sh
 mise trust
@@ -116,11 +83,11 @@ mise run setup
 mise run check
 ```
 
-Tool versions are pinned in `mise.toml`; Ruby stays at 3.3.13. The development
-bundle requires Ruby 3.2+ for the patched Nokogiri. RuboCop rules are unchanged.
-Pre-commit checks Ruby, workflows and staged secrets; pre-push runs the full
-check. CI also runs it on pull requests, pushes to `main` and weekly, including
-secret history and OSV scans. Dependabot updates gems and Actions weekly.
+On Linux, `bundle exec rake test:compatibility:sanitizers` builds the extension
+with ASan and UBSan. For this check, build MRI with
+`--with-setjmp-type=_setjmp` so ASan can track stack unwinding through Ruby
+exceptions. The GC stress phase of the sanitizer runner also requires an
+ASan-instrumented Ruby.
 
 ### Extension compatibility tests
 
@@ -146,10 +113,4 @@ ENGINES=pure,c MODES=warn,strict bundle exec ruby test/compatibility/run.rb exte
 TEST_SEED=90210 bundle exec rake test:compatibility:extensions
 ```
 
-## Contributing
-
-1. Fork it ( http://github.com/Shopify/liquid-c/fork )
-2. Create your feature branch (`git checkout -b my-new-feature`)
-3. Commit your changes (`git commit -am 'Add some feature'`)
-4. Push to the branch (`git push origin my-new-feature`)
-5. Create new Pull Request
+See the [compatibility corpus guide](test/fixtures/liquid_spec/README.md) for the pinned fixtures and reproduction commands.

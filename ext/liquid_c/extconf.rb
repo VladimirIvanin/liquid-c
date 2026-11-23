@@ -21,7 +21,6 @@ else
   $CFLAGS << " -DNDEBUG"
 end
 
-have_func "rb_hash_bulk_insert"
 have_func "rb_autoload_p"
 have_func "st_memsize", "ruby/st.h"
 have_func("rb_method_basic_definition_p") if RUBY_ENGINE == "ruby"

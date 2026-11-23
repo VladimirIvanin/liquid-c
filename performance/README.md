@@ -1,10 +1,10 @@
 # Воспроизводимые измерения liquid-c
 
-Цель — Ruby 3.2 без YJIT и без Liquid Profiler. GC включён. Сценарии используют локальный `fixtures.json` и отдельно измеряют parse, render и parse+render; JSONL содержит образцы, медиану, разброс, аллокации и RSS.
+Для сравнения ревизий на Ruby 3.2 отключите YJIT и Liquid Profiler, оставив GC включённым. Шаблоны, входные данные и ожидаемые результаты хранятся в `fixtures.json` и `workloads.rb`. Каждая строка JSONL описывает одну фазу (parse, render или parse+render) и содержит образцы, медиану, разброс, аллокации и RSS. Пример сравнения с чистым Liquid на Ruby из `.ruby-version` приведён в [корневом README](../README.md#performance).
 
 ```sh
 mkdir -p docs/bench
-DEBUG=false bundle exec rake compile
+DEBUG=false bundle exec rake clean compile
 REPEATS=5 BATCH_SECONDS=0.3 bundle exec ruby --disable-yjit -Ilib performance/measure.rb > docs/bench/current.jsonl
 bundle exec ruby performance/compare.rb docs/bench/baseline.jsonl docs/bench/current.jsonl
 ```
@@ -17,7 +17,9 @@ ruby performance/run_comparison.rb BASE_EXTENSION BASE_LIBRARY CURRENT_EXTENSION
 
 BASE_LIBRARY должен содержать Ruby-обвязку соответствующей baseline-сборки без другого liquid_c.so. Не смешивайте ABI и версии обвязки. `BENCH_SCENARIOS=variables,unique` ограничивает группу, `EDITOR_PATCH=true` применяет editor hook к обоим вариантам, `BENCH_ENGINE=pure` выбирает Ruby Liquid. YJIT включается только явным `BENCH_YJIT=true`; такие измерения не являются целевыми.
 
-`build_stage_baseline.rb` строит промежуточную ступень исправлений безопасности без новых frontend. Измерять варианты последовательно, без параллельных тестов и сборок, с одинаковым Ruby/JIT и минимум пятью повторами. RSS — накопительный VmHWM процесса. Небольшая разница при пересечении диапазонов не доказывает ускорения.
+Для сравнения с исторической версией собирайте и C-расширение, и Ruby-обвязку из одной ревизии. Измеряйте варианты последовательно, без параллельных тестов и сборок, с одинаковым Ruby/JIT и минимум пятью повторами. RSS — накопительный VmHWM процесса. Небольшая разница при пересечении диапазонов не доказывает ускорения.
+
+В таблице `compare.rb` и поле `speedup` отчёта Fleur ускорение равно отношению времени базового движка к текущему. Значение выше единицы означает ускорение. Поле `current_over_legacy` в JSON Fleur сохраняет обратное отношение длительностей для существующих потребителей.
 
 Результаты и исследовательские отчёты хранить в игнорируемой `docs/`, не добавлять в Git.
 

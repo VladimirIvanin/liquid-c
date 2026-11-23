@@ -80,7 +80,8 @@ static size_t primitive_guard_count;
 
 static void native_guard_primitive(VALUE owner, const char *method)
 {
-    assert(primitive_guard_count < sizeof(primitive_guards) / sizeof(primitive_guards[0]));
+    if (primitive_guard_count >= sizeof(primitive_guards) / sizeof(primitive_guards[0]))
+        rb_raise(rb_eRuntimeError, "too many native primitive guards");
     primitive_guards[primitive_guard_count].owner = owner;
     rb_gc_register_address(&primitive_guards[primitive_guard_count].entry);
     primitive_guards[primitive_guard_count].public_call = strcmp(method, "initialize_copy") && strcmp(method, "initialize_dup");
@@ -1485,7 +1486,6 @@ static VALUE native_enable_variable_frontend(VALUE self)
 }
 
 #if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
-static VALUE compiler_guard_specs = Qnil;
 static struct { VALUE owner, entry; ID method; bool public_call, control, builtin; } compiler_methods[256];
 static size_t compiler_method_count;
 static VALUE renderer_guard_entries = Qnil;
@@ -1560,22 +1560,18 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
         Check_Type(RARRAY_AREF(spec, 1), T_SYMBOL);
     }
     compiler_registered = true;
-    compiler_guard_specs = specifications;
     compiler_body_class = rb_const_get(mLiquidC, rb_intern("BlockBody"));
     compiler_body_allocator = rb_get_alloc_func(compiler_body_class);
     compiler_method_count = (size_t)RARRAY_LEN(specifications);
     for (long i = 0; i < RARRAY_LEN(specifications); i++) {
         VALUE spec = RARRAY_AREF(specifications, i);
-        Check_Type(spec, T_ARRAY);
-        if (RARRAY_LEN(spec) != 3) rb_raise(rb_eArgError, "invalid compiler guard");
         VALUE owner = RARRAY_AREF(spec, 0);
-        Check_Type(RARRAY_AREF(spec, 1), T_SYMBOL);
-        VALUE entry = (VALUE)rb_callable_method_entry(owner, SYM2ID(RARRAY_AREF(spec, 1)));
+        ID method = SYM2ID(RARRAY_AREF(spec, 1));
+        VALUE entry = (VALUE)rb_callable_method_entry(owner, method);
         compiler_methods[i].control = RTEST(RARRAY_AREF(spec, 2));
-        compiler_methods[i].builtin = liquid_method_basic_definition_p(owner, SYM2ID(RARRAY_AREF(spec, 1)));
+        compiler_methods[i].builtin = liquid_method_basic_definition_p(owner, method);
         compiler_methods[i].owner = owner;
         compiler_methods[i].entry = entry;
-        ID method = SYM2ID(RARRAY_AREF(spec, 1));
         compiler_methods[i].method = method;
         compiler_methods[i].public_call =
             (owner == compiler_body_class && method != rb_intern("initialize")) || owner == native_context_class ||
@@ -2268,7 +2264,6 @@ bool variable_output_method_standard(void) { return false; }
 void liquid_define_native_parser(void)
 {
 #if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
-    rb_global_variable(&compiler_guard_specs);
     rb_global_variable(&renderer_guard_entries);
     rb_global_variable(&compiler_body_class);
     rb_global_variable(&compiler_constants);

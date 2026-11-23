@@ -41,16 +41,15 @@ class AuditRegressionTest < Minitest::Test
   def test_disabled_context_setters_release_hidden_vm_references
     context = Liquid::Context.build
     template = Liquid::Template.parse("{{ value }}")
-    payload_ref = Thread.new do
+    payload_ref, strainer_ref = Thread.new do
       payload = "g" * 1_048_576
       context.global_filter = lambda do |value|
         payload.bytesize
         value
       end
       template.render!(context)
-      WeakRef.new(payload)
+      [WeakRef.new(payload), WeakRef.new(context.strainer)]
     end.value
-    strainer_ref = WeakRef.new(context.strainer)
     Liquid::C.enabled = false
     context.global_filter = nil
     context.add_filters(Module.new)

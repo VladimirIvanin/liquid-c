@@ -4,10 +4,25 @@ require "bundler/setup"
 require "json"
 require "digest"
 require "strscan"
+require "rbconfig"
 $LOAD_PATH.unshift(ENV["LIQUID_C_EXTENSION_DIR"]) if ENV["LIQUID_C_EXTENSION_DIR"]
 $LOAD_PATH.unshift(ENV["LIQUID_C_LIBRARY_DIR"]) if ENV["LIQUID_C_LIBRARY_DIR"]
 require "liquid"
-require "liquid/c" unless ENV["BENCH_ENGINE"] == "pure"
+unless ENV["BENCH_ENGINE"] == "pure"
+  require "liquid/c"
+  filename = "liquid_c.#{RbConfig::CONFIG.fetch("DLEXT")}"
+  extension = $LOADED_FEATURES.find { |path| File.basename(path) == filename }
+  abort "native extension was not loaded" unless extension
+  if ENV["LIQUID_C_EXTENSION_DIR"]
+    expected = File.join(ENV.fetch("LIQUID_C_EXTENSION_DIR"), filename)
+    abort "loaded #{extension}, expected #{expected}" unless File.identical?(extension, expected)
+  end
+  if ENV["LIQUID_C_LIBRARY_DIR"]
+    wrapper = $LOADED_FEATURES.find { |path| path.end_with?("/liquid/c.rb") }
+    expected = File.join(ENV.fetch("LIQUID_C_LIBRARY_DIR"), "liquid/c.rb")
+    abort "loaded #{wrapper}, expected #{expected}" unless wrapper && File.identical?(wrapper, expected)
+  end
+end
 
 class BenchmarkFileSystem
   def initialize(partials)
@@ -36,6 +51,7 @@ if ARGV.delete("--list")
   exit
 end
 fixtures.select! { |fixture| ARGV.empty? || ARGV.any? { |pattern| fixture.fetch("id").include?(pattern) } }
+abort "no scenarios selected" if fixtures.empty?
 fixtures.each do |fixture|
   environment = Liquid::Environment.build(error_mode: :strict) do |env|
     env.file_system = BenchmarkFileSystem.new(fixture.fetch("partials"))
@@ -82,9 +98,9 @@ fixtures.each do |fixture|
       ruby: RUBY_DESCRIPTION,
       yjit: defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled?,
       liquid: Liquid::VERSION,
-      extension: $LOADED_FEATURES.find { |path| path.end_with?("/liquid_c.so") },
+      extension: extension,
       opaque_method_guards: defined?(Liquid::C::NativeParser) && Liquid::C::NativeParser::NATIVE_GUARDS,
-      native_parser: ENV["LIQUID_C_NATIVE_PARSER"] != "false",
+      native_parser: !extension.nil? && ENV["LIQUID_C_NATIVE_PARSER"] != "false",
       variant: ENV.fetch("BENCH_VARIANT", "current"),
       median_seconds: times[times.size / 2],
       min_seconds: times.first,

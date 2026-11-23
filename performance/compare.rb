@@ -2,14 +2,21 @@
 
 require "json"
 
+abort "usage: ruby performance/compare.rb BEFORE.jsonl AFTER.jsonl" unless ARGV.size == 2
 before, after = ARGV.map do |path|
-  File.readlines(path, chomp: true).map { |line| JSON.parse(line) }
-    .to_h { |row| [[row.fetch("scenario"), row.fetch("mode")], row] }
+  rows = {}
+  File.foreach(path) do |line|
+    row = JSON.parse(line)
+    key = [row.fetch("scenario"), row.fetch("mode")]
+    abort("duplicate record in #{path}: #{key}") if rows.key?(key)
+    rows[key] = row
+  end
+  abort("no measurements in #{path}") if rows.empty?
+  rows
 end
-abort "usage: ruby performance/compare.rb BEFORE.jsonl AFTER.jsonl" unless before && after
 abort "scenario sets differ" unless before.keys.sort == after.keys.sort
 
-puts "| Scenario / phase | Before, µs | After, µs | Speed ratio | Objects before → after | Spread after, µs |"
+puts "| Scenario / phase | Before, µs | After, µs | Speedup | Objects before → after | Spread after, µs |"
 puts "|---|---:|---:|---:|---:|---:|"
 before.each do |key, old|
   current = after.fetch(key)

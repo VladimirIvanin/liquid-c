@@ -9,7 +9,7 @@
 #include "variable.h"
 
 ID id_render_node;
-ID id_vm;
+static ID id_vm;
 
 static VALUE cLiquidCVM;
 static VALUE mLiquidUtils;
@@ -87,26 +87,32 @@ static void vm_refresh_context(vm_t *vm)
     }
 }
 
+vm_t *vm_cached_for_context(VALUE context)
+{
+    VALUE cached = rb_attr_get(context, id_vm);
+    if (NIL_P(cached)) return NULL;
+
+    vm_t *vm;
+    TypedData_Get_Struct(cached, vm_t, &vm_data_type, vm);
+    return vm->context.self == context ? vm : NULL;
+}
+
 vm_t *vm_from_context(VALUE context)
 {
-    VALUE vm_obj = rb_attr_get(context, id_vm);
-    if (vm_obj == Qnil || ((vm_t *)DATA_PTR(vm_obj))->context.self != context) {
-        vm_obj = vm_internal_new(context);
-        rb_ivar_set(context, id_vm, vm_obj);
+    vm_t *vm = vm_cached_for_context(context);
+    if (!vm) {
+        VALUE obj = vm_internal_new(context);
+        rb_ivar_set(context, id_vm, obj);
+        vm = RTYPEDDATA_DATA(obj);
     }
-    // instance variable is hidden from ruby so should be safe to unwrap it without type checking
-    vm_t *vm = DATA_PTR(vm_obj);
     vm_refresh_context(vm);
     return vm;
 }
 
 bool liquid_vm_filtering(VALUE context)
 {
-    VALUE vm_obj = rb_attr_get(context, id_vm);
-    if (vm_obj == Qnil)
-        return false;
-    vm_t *vm = DATA_PTR(vm_obj);
-    return vm->context.self == context && vm->invoking_filter;
+    vm_t *vm = vm_cached_for_context(context);
+    return vm && vm->invoking_filter;
 }
 
 static void write_fixnum(VALUE output, VALUE fixnum)
@@ -257,7 +263,7 @@ static void vm_increment_write_score(vm_t *vm, VALUE output)
 
 static VALUE vm_reset_context(VALUE klass, VALUE context)
 {
-    rb_ivar_set(context, id_vm, Qnil);
+    if (!vm_cached_for_context(context)) rb_ivar_set(context, id_vm, Qnil);
     return Qnil;
 }
 
@@ -324,17 +330,6 @@ static VALUE range_value_to_integer(VALUE value)
         return rb_rescue2(try_string_to_integer, value, raise_invalid_integer, Qnil, rb_eArgError, (VALUE)0);
     }
 }
-
-#ifdef HAVE_RB_HASH_BULK_INSERT
-#define hash_bulk_insert rb_hash_bulk_insert
-#else
-static void hash_bulk_insert(long argc, const VALUE *argv, VALUE hash)
-{
-    for (long i = 0; i < argc; i += 2) {
-        rb_hash_aset(hash, argv[i], argv[i + 1]);
-    }
-}
-#endif
 
 static const uint8_t *vm_skip_variable_instructions(const uint8_t *ip)
 {
@@ -469,9 +464,10 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 size_t num_keys_and_values = hash_size * 2;
                 VALUE hash = rb_hash_new();
 
-                VALUE *args_ptr = ALLOCA_N(VALUE, num_keys_and_values);
-                memcpy(args_ptr, vm_stack_peek_n(vm, num_keys_and_values), num_keys_and_values * sizeof(VALUE));
-                hash_bulk_insert(num_keys_and_values, args_ptr, hash);
+                for (size_t i = 0; i < num_keys_and_values; i += 2) {
+                    VALUE *pair = vm_stack_peek_n(vm, num_keys_and_values - i);
+                    rb_hash_aset(hash, pair[0], pair[1]);
+                }
                 vm_stack_pop_n(vm, num_keys_and_values);
 
                 vm_stack_push(vm, hash);

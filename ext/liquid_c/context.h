@@ -58,7 +58,7 @@ inline static VALUE nested_value_to_liquid_and_set_context(VALUE value, VALUE co
 inline static VALUE materialize_proc(VALUE context, VALUE scope, VALUE key, VALUE value)
 {
     if (scope != Qnil && rb_obj_is_proc(value) && rb_respond_to(scope, id_aset)) {
-        if (rb_proc_arity(value) != 0) {
+        if (!RTEST(rb_equal(rb_funcall(value, rb_intern("arity"), 0), INT2FIX(0)))) {
             value = rb_funcall(value, id_call, 1, context);
         } else {
             value = rb_funcall(value, id_call, 0);

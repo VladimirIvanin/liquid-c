@@ -25,6 +25,7 @@ typedef struct vm {
 } vm_t;
 
 void liquid_define_vm(void);
+vm_t *vm_cached_for_context(VALUE context);
 vm_t *vm_from_context(VALUE context);
 void liquid_vm_render(block_body_header_t *block, const VALUE *const_ptr, VALUE context, VALUE output, const VALUE *nodelist);
 void liquid_vm_next_instruction(const uint8_t **ip_ptr);

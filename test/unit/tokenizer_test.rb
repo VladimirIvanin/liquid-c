@@ -94,6 +94,11 @@ class TokenizerTest < Minitest::Test
     fallback_tokenizer = parse_context.new_tokenizer(too_large_source)
     assert_instance_of(Liquid::Tokenizer, fallback_tokenizer)
     assert_equal(true, parse_context.liquid_c_nodes_disabled?)
+    document = Liquid::Document.parse(fallback_tokenizer, parse_context)
+    assert_instance_of(Liquid::BlockBody, document.body)
+    small = Liquid::Template.parse("{{ name }}", parse_context)
+    assert_instance_of(Liquid::C::BlockBody, small.root.body)
+    assert_equal("OK", small.render!("name" => "OK"))
   end
 
   private

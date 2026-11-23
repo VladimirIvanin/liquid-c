@@ -109,6 +109,7 @@ void document_body_finish(VALUE self)
             c_buffer_free(&body->buffer);
         }
     }
+    rb_ary_freeze(body->constants);
     rb_obj_freeze(self);
 }
 

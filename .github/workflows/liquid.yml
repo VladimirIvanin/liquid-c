@@ -33,6 +33,25 @@ jobs:
           bundler-cache: true
       - run: bundle exec rake test:compatibility:corpus test:compatibility:slice_coverage
 
+  packaged-gem:
+    name: Packaged gem (Ruby ${{ matrix.ruby }})
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        ruby: ['3.0', '3.1']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - run: |
+          gem build liquid-c.gemspec --output liquid-c.gem
+          gem install --no-document ./liquid-c.gem
+          ruby -rliquid/c -e 't = Liquid::Template.parse("{{ x | upcase }}"); abort unless t.root.body.is_a?(Liquid::C::BlockBody) && t.render!("x" => "ok") == "OK"'
+
   test:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
@@ -77,7 +96,7 @@ jobs:
   check:
     name: Full check
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -98,5 +117,30 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y build-essential valgrind
-      - run: bundle exec rake test:compatibility:sanitizers
+      - name: Select matching Ruby sources for ASan
+        id: sanitizer-source
+        run: ruby -e 'puts "revision=#{RUBY_REVISION}"' >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: ruby/ruby
+          ref: ${{ steps.sanitizer-source.outputs.revision }}
+          path: tmp/sanitizer-ruby-source
+          persist-credentials: false
+      - name: Build Ruby with libc stack unwinding for ASan
+        working-directory: tmp/sanitizer-ruby-source
+        run: |
+          ./autogen.sh
+          shared=$(ruby -rrbconfig -e 'print RbConfig::CONFIG.fetch("ENABLE_SHARED")')
+          ./configure --prefix="$RUNNER_TEMP/sanitizer-ruby" --enable-shared="$shared" --with-setjmp-type=_setjmp --disable-yjit --disable-install-doc
+          make -j"$(nproc)"
+          make install
+      - name: Run sanitizer checks with the locked bundle
+        run: |
+          bundle_executable=$(command -v bundle)
+          gem_dir=$(ruby -e 'puts Gem.dir')
+          gem_path=$(ruby -e 'puts Gem.path.join(File::PATH_SEPARATOR)')
+          runtime="$RUNNER_TEMP/sanitizer-ruby"
+          export PATH="$runtime/bin:$PATH" GEM_HOME="$gem_dir" GEM_PATH="$gem_path"
+          export LD_LIBRARY_PATH="$runtime/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          "$runtime/bin/ruby" "$bundle_executable" exec "$runtime/bin/ruby" test/compatibility/native_safety.rb sanitizers
       - run: mise run check

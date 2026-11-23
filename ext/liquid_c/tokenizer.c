@@ -59,10 +59,13 @@ static VALUE tokenizer_initialize_method(VALUE self, VALUE source, VALUE start_l
 #undef MAX_SOURCE_CODE_BYTES
 
     Tokenizer_Get_Struct(self, tokenizer);
-    source = rb_str_dup_frozen(source);
-    tokenizer->source = source;
-    tokenizer->cursor = RSTRING_PTR(source);
-    tokenizer->cursor_end = tokenizer->cursor + RSTRING_LEN(source);
+    // A frozen substring may still borrow storage from a movable parent.
+    long length = RSTRING_LEN(source);
+    VALUE owned_source = rb_enc_str_new(NULL, length, utf8_encoding);
+    memcpy(RSTRING_PTR(owned_source), RSTRING_PTR(source), (size_t)length);
+    tokenizer->source = rb_obj_freeze(owned_source);
+    tokenizer->cursor = RSTRING_PTR(owned_source);
+    tokenizer->cursor_end = tokenizer->cursor + length;
     tokenizer->lstrip_flag = false;
     // nil indicates that line numbers are not being calculated. Native API
     // callers retain the historical zero-as-disabled convention.

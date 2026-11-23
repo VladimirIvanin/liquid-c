@@ -175,6 +175,23 @@ class NativeCompilerTest < Minitest::Test
     end
   end
 
+  def test_registered_include_subclass_parses_and_renders_its_own_markup
+    tag = Class.new(Liquid::Include) do
+      def initialize(tag_name, markup, context)
+        super(tag_name, "'unused'", context)
+        @label = markup.strip
+      end
+
+      def render_to_output_buffer(_context, output)
+        output << @label
+      end
+    end
+    env = Liquid::Environment.build { |environment| environment.register_tag("include", tag) }
+    template = Liquid::Template.parse("{% include custom markup %}", environment: env, error_mode: :strict)
+    assert_instance_of(tag, template.root.nodelist.first)
+    assert_equal("custom markup", template.render!)
+  end
+
   def test_include_runtime_disableable_and_partial_cache_are_preserved
     isolated(<<~RUBY)
       reads = []

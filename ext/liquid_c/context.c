@@ -4,14 +4,12 @@
 #include "variable.h"
 #include "liquid_vm.h"
 #include "expression.h"
-#include "document_body.h"
 
 static VALUE cLiquidUndefinedVariable;
 ID id_aset, id_set_context;
-extern ID id_vm;
 static ID id_has_key, id_aref, id_strainer, id_filter_methods_hash, id_strict_variables, id_global_filter;
 static ID id_ivar_global_filter, id_ivar_strict_filters;
-static ID id_ivar_scopes, id_ivar_environments, id_ivar_static_environments, id_ivar_strict_variables, id_ivar_interrupts, id_ivar_resource_limits, id_ivar_document_body;
+static ID id_ivar_scopes, id_ivar_environments, id_ivar_static_environments, id_ivar_strict_variables, id_ivar_interrupts, id_ivar_resource_limits;
 
 void context_internal_init(VALUE context_obj, context_t *context)
 {
@@ -156,8 +154,9 @@ VALUE context_find_variable(context_t *context, VALUE key, VALUE raise_on_not_fo
                 goto variable_found;
             }
         } else if (RTEST(rb_funcall(this_scope, id_has_key, 1, key))) {
-            // Slow path: It is valid to pass a non-hash value to Liquid as a
-            // scope if it supports #key? and #[]
+            if (RTEST(rb_ivar_get(self, id_ivar_strict_variables)) && RTEST(raise_on_not_found) &&
+                rb_respond_to(this_scope, id_has_key) && !RTEST(rb_funcall(this_scope, id_has_key, 1, key)))
+                context_raise_undefined_variable(key);
             variable = rb_funcall(this_scope, id_aref, 1, key);
             scope = this_scope;
             goto variable_found;
@@ -194,12 +193,8 @@ static VALUE context_set_strict_variables(VALUE self, VALUE strict_variables)
 static VALUE context_set_global_filter(VALUE self, VALUE filter)
 {
     rb_ivar_set(self, id_ivar_global_filter, filter);
-    VALUE vm_obj = rb_attr_get(self, id_vm);
-    if (!NIL_P(vm_obj)) {
-        vm_t *vm = DATA_PTR(vm_obj);
-        if (vm->context.self == self)
-            vm->context.global_filter = filter;
-    }
+    vm_t *vm = vm_cached_for_context(self);
+    if (vm) vm->context.global_filter = filter;
     return filter;
 }
 
@@ -212,15 +207,12 @@ static VALUE context_set_strict_filters(VALUE self, VALUE strict_filters)
 static VALUE context_add_filters(VALUE self, VALUE filters)
 {
     VALUE result = rb_funcall(self, rb_intern("ruby_add_filters"), 1, filters);
-    VALUE vm_obj = rb_attr_get(self, id_vm);
-    if (!NIL_P(vm_obj)) {
-        vm_t *vm = DATA_PTR(vm_obj);
-        if (vm->context.self == self) {
-            vm->context.strainer = Qnil;
-            vm->context.filter_methods = Qnil;
-            vm->context_generation = 0;
-            vm->context_revision++;
-        }
+    vm_t *vm = vm_cached_for_context(self);
+    if (vm) {
+        vm->context.strainer = Qnil;
+        vm->context.filter_methods = Qnil;
+        vm->context_generation = 0;
+        vm->context_revision++;
     }
     return result;
 }
@@ -252,7 +244,6 @@ void liquid_define_context(void)
     id_ivar_strict_variables = rb_intern("@strict_variables");
     id_ivar_interrupts = rb_intern("@interrupts");
     id_ivar_resource_limits = rb_intern("@resource_limits");
-    id_ivar_document_body = rb_intern("@document_body");
 
     cLiquidVariableLookup = rb_const_get(mLiquid, rb_intern("VariableLookup"));
     rb_global_variable(&cLiquidVariableLookup);

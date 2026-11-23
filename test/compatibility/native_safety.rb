@@ -72,7 +72,7 @@ Dir.chdir(root) do
       run.call(command, env, "native-compiler-#{gc_mode}", 300)
     end
   end
-  command = [RbConfig.ruby, "test/assembler_allocation_failure.rb"]
+  command = [RbConfig.ruby, "-Ilib", "test/assembler_allocation_failure.rb"]
   command.insert(1, "test/compatibility/memcheck.rb") if mode == "valgrind"
   run.call(command, env, "allocation-failures", 300)
 end

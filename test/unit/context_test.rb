@@ -46,6 +46,24 @@ class ContextTest < Minitest::Test
     assert_empty(ruby_lookups)
   end
 
+  def test_strict_lookup_rechecks_custom_scope_before_read
+    scope = {}
+    checks = 0
+    scope.define_singleton_method(:key?) { |_key| (checks += 1) == 1 }
+    context = Liquid::Context.new
+    context.strict_variables = true
+    context.stack(scope) do
+      assert_raises(Liquid::UndefinedVariable) { context.find_variable("missing") }
+    end
+    assert_equal(2, checks)
+  end
+
+  def test_lazy_lookup_uses_public_proc_arity
+    value = proc { |context = nil| context ? "with context" : "without context" }
+    value.define_singleton_method(:arity) { 1 }
+    assert_equal("with context", Liquid::Context.new("x" => value).find_variable("x"))
+  end
+
   class TestDrop < Liquid::Drop
     def is_filtering # rubocop:disable Naming/PredicateName
       @context.send(:c_filtering?)
