@@ -23,6 +23,8 @@ Gem::Specification.new do |spec|
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
 
   spec.add_dependency("liquid", "= 5.14.0")
+  # strscan 3.1.8 can misread Liquid tokens during GC compaction on MRI.
+  spec.add_dependency("strscan", "!= 3.1.8")
 
   spec.add_development_dependency("bundler", ">= 1.5") # has bugfix for segfaulting deploys
   spec.add_development_dependency("minitest", "~> 5.22")

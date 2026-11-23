@@ -14,6 +14,7 @@ group :test do
   gem "lru_redux", "~> 1.1"
   gem "nokogiri", "~> 1.19.7", force_ruby_platform: true
   gem "base64", require: false # for older rubocop on Ruby 3.4
+  gem "tsort", require: false # for rubocop on Ruby 4.1
   gem "rubocop", "~> 1.61.0", require: false
   gem "rubocop-performance", "~> 1.13.2", require: false
   gem "rubocop-shopify", "~> 2.15.1", require: false

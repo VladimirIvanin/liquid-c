@@ -19,7 +19,7 @@ class ReviewTest < Minitest::Test
   end
 
   def test_numeric_parse_does_not_mutate_source_when_warning_raises
-    skip("float overflow warnings are specific to MRI") unless RUBY_ENGINE == "ruby"
+    warns = float_overflow_warns?
     [false, true].each do |frozen|
       source = "(" + "9" * 400 + ".0..x)"
       before = source.dup
@@ -28,7 +28,11 @@ class ReviewTest < Minitest::Test
         verbose = $VERBOSE
         begin
           $VERBOSE = true
-          assert_raises(RuntimeError) { Liquid::C::Expression.strict_parse(source) }
+          if warns
+            assert_raises(RuntimeError) { Liquid::C::Expression.strict_parse(source) }
+          else
+            assert_instance_of(Liquid::C::Expression, Liquid::C::Expression.strict_parse(source))
+          end
         ensure
           $VERBOSE = verbose
         end
@@ -39,8 +43,9 @@ class ReviewTest < Minitest::Test
   end
 
   def test_numeric_parse_keeps_snapshot_when_warning_mutates_input
-    skip("float overflow warnings are specific to MRI") unless RUBY_ENGINE == "ruby"
+    warns = float_overflow_warns?
     source = "9" * 400 + ".0"
+    before = source.dup
     callback = ->(*) {
       source.replace("x")
       GC.start
@@ -54,7 +59,7 @@ class ReviewTest < Minitest::Test
         $VERBOSE = verbose
       end
     end
-    assert_equal("x", source)
+    assert_equal(warns ? "x" : before, source)
   end
 
   def test_expression_reuse_preserves_source_instructions
@@ -240,5 +245,17 @@ class ReviewTest < Minitest::Test
     end
     template.render!(context)
     assert_equal("HELLO", template.render!(context))
+  end
+
+  private
+
+  def float_overflow_warns?
+    verbose = $VERBOSE
+    $VERBOSE = true
+    warned = false
+    Warning.stub(:warn, ->(*) { warned = true }) { Float("9" * 400 + ".0") }
+    warned
+  ensure
+    $VERBOSE = verbose
   end
 end

@@ -12,6 +12,7 @@ PATH
   specs:
     liquid-c (4.2.0)
       liquid (= 5.14.0)
+      strscan (!= 3.1.8)
 
 GEM
   remote: https://rubygems.org/
@@ -71,7 +72,8 @@ GEM
     simplecov_json_formatter (0.1.4)
     spy (0.4.1)
     stackprof (0.2.28)
-    strscan (3.1.8)
+    strscan (3.1.7)
+    tsort (0.2.0)
     unicode-display_width (2.5.0)
     vernier (1.11.0)
 
@@ -99,6 +101,7 @@ DEPENDENCIES
   simplecov (~> 0.22.0)
   spy (= 0.4.1)
   stackprof (~> 0.2.28)
+  tsort
   vernier (~> 1.11.0)
 
 BUNDLED WITH
