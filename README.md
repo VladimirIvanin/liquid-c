@@ -33,7 +33,8 @@ Liquid methods. A registered subclass of `Liquid::Include` keeps its own parse
 and render behavior. Other Ruby versions can still use the C tokenizer, block
 body and rendering VM. To inspect variable parser decisions for a template,
 pass a hash as the `native_parser_stats:` parse option. The parser populates
-it with counts such as `accepted` and `guard_cost`.
+it with counts such as `accepted` and `guard_cost`. Applications that require
+the guarded parser can check `Liquid::C::NativeParser::NATIVE_GUARDS` at boot.
 
 Whitespace trimming follows Liquid 5.14.0 by default. Templates that depend on
 historical liquid-c whitespace trimming can opt in during parsing with
@@ -60,7 +61,8 @@ divided by the extension median. Values above one indicate a faster extension.
 The runner checks each fixture's output.
 
 On MRI 3.3.13 (x86-64 Linux, YJIT off), the two render fixtures gave the
-following allocation counts, rounded to the nearest object per render.
+following allocation counts, rounded to the nearest object per render. This Ruby
+uses the C rendering VM with the MRI 3.2 guarded compiler disabled.
 
 | Fixture | Plain Liquid | Liquid C |
 | --- | ---: | ---: |
@@ -82,6 +84,12 @@ mise install
 mise run setup
 mise run check
 ```
+
+Run `mise run test:insales` to check the current working tree on MRI 3.2.11,
+the InSales production version. The task uses rsync to create an isolated build
+under `tmp/`, verifies guarded native parsing is available, and runs the unit
+tests and compatibility matrix. A failed run keeps its build and logs for
+inspection. The default `mise run test` uses MRI 3.3.13.
 
 On Linux, `bundle exec rake test:compatibility:sanitizers` builds the extension
 with ASan and UBSan. For this check, build MRI with

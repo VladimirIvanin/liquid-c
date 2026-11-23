@@ -37,6 +37,33 @@ class AuditRegressionTest < Minitest::Test
     assert_match(/discarded/, error.message)
   end
 
+  def test_nested_case_discards_bodies_from_both_prologues
+    bodies = []
+    tag = Class.new(Liquid::Block) do
+      define_method(:parse) do |tokens|
+        super(tokens)
+        bodies << @body
+      end
+    end
+    environment = Liquid::Environment.build { |env| env.register_tag("keep", tag) }
+    source = "{% case x %}{% keep %}earlier{% endkeep %}{% when 1 %}{% endcase %}" \
+      "{% keep %}before{% endkeep %}" \
+      "{% case x %}{% keep %}outer{% endkeep %}" \
+      "{% case y %}{% keep %}inner{% endkeep %}{% when 1 %}{% endcase %}" \
+      "{% when 1 %}{% keep %}after{% endkeep %}{% endcase %}"
+    template = Liquid::Template.parse(source, environment: environment, error_mode: :strict)
+
+    assert_equal("beforeafter", template.render!("x" => 1))
+    assert_equal(5, bodies.size)
+    earlier, before, outer, inner, after = bodies
+    assert_equal("before", before.render(Liquid::Context.new))
+    [earlier, outer, inner].each do |body|
+      error = assert_raises(RuntimeError) { body.blank? }
+      assert_equal("Liquid block body was discarded during parsing", error.message)
+    end
+    assert_equal("after", after.render(Liquid::Context.new))
+  end
+
   def test_disabled_context_setters_release_hidden_vm_references
     context = Liquid::Context.build
     template = Liquid::Template.parse("{{ value }}")

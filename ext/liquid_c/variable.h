@@ -9,7 +9,7 @@ extern VALUE cLiquidCVariableExpression;
 
 // Valid only inside a C parsing loop, until Ruby code or GC can run.
 typedef struct {
-    bool valid, control_validated, control_checked, control_enabled, literals_checked;
+    bool valid, control_validated, tags_enabled, control_checked, control_enabled, literals_checked;
     size_t gc_count;
     VALUE cache;
     VALUE environment, tags, condition_literals;

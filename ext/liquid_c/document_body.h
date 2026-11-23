@@ -17,6 +17,10 @@ typedef struct block_body_header {
 #define BLOCK_BODY_HEADER_FLAG_BLANK (1 << 0)
 #define BLOCK_BODY_HEADER_BLANK_P(header) (header->flags & BLOCK_BODY_HEADER_FLAG_BLANK)
 
+typedef struct {
+    size_t first, last;
+} serial_range_t;
+
 typedef struct document_body {
     VALUE self;
     VALUE constants;
@@ -48,15 +52,15 @@ static inline void document_body_entry_mark(document_body_entry_t *entry)
 
 static inline block_body_header_t *document_body_get_block_body_header_ptr(const document_body_entry_t *entry)
 {
-    const size_t *ranges = (const size_t *)entry->body->invalid_serials.data;
-    size_t range_count = c_buffer_size(&entry->body->invalid_serials) / (2 * sizeof(size_t));
+    const serial_range_t *ranges = (const serial_range_t *)entry->body->invalid_serials.data;
+    size_t range_count = c_buffer_size(&entry->body->invalid_serials) / sizeof(*ranges);
     size_t low = 0, high = range_count;
     while (low < high) {
         size_t middle = low + (high - low) / 2;
-        if (ranges[middle * 2 + 1] < entry->serial) low = middle + 1;
+        if (ranges[middle].last < entry->serial) low = middle + 1;
         else high = middle;
     }
-    if (low < range_count && entry->serial >= ranges[low * 2])
+    if (low < range_count && entry->serial >= ranges[low].first)
         rb_raise(rb_eRuntimeError, "Liquid block body was discarded during parsing");
     size_t size = c_buffer_size(&entry->body->buffer);
     if (entry->buffer_offset > size || size - entry->buffer_offset < sizeof(block_body_header_t))

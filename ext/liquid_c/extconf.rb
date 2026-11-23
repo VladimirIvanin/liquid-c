@@ -36,35 +36,24 @@ unless have_func("ruby_stack_check")
 end
 # Link tests against a static libruby can find hidden symbols which extensions
 # cannot resolve at load time (MRI 3.3+). Probe the running process as well.
-begin
+def mri_exports?(symbol)
+  return false unless RUBY_ENGINE == "ruby"
+
   require "fiddle"
-  exported_method_entry = RUBY_ENGINE == "ruby" && Fiddle::Handle::DEFAULT["rb_callable_method_entry"]
+  Fiddle::Handle::DEFAULT[symbol]
 rescue LoadError, Fiddle::DLError
-  exported_method_entry = false
-end
-have_func("rb_callable_method_entry") if exported_method_entry
-if RUBY_ENGINE == "ruby" && defined?(Fiddle::Handle)
-  begin
-    exported_hash_identity = Fiddle::Handle::DEFAULT["rb_hash_compare_by_id_p"]
-  rescue Fiddle::DLError
-    exported_hash_identity = false
-  end
-  have_func("rb_hash_compare_by_id_p") if exported_hash_identity
+  false
 end
 
-if RUBY_ENGINE == "ruby" && defined?(Fiddle::Handle)
-  begin
-    exported_event_flags = Fiddle::Handle::DEFAULT["ruby_vm_event_flags"]
-  rescue Fiddle::DLError
-    exported_event_flags = false
-  end
-  if exported_event_flags && try_link(<<~C)
-    #include <ruby.h>
-    extern rb_event_flag_t ruby_vm_event_flags;
-    int main(void) { return (int)ruby_vm_event_flags; }
-  C
-    $defs << "-DHAVE_RUBY_VM_EVENT_FLAGS"
-  end
+["rb_callable_method_entry", "rb_hash_compare_by_id_p"].each do |function|
+  have_func(function) if mri_exports?(function)
+end
+if mri_exports?("ruby_vm_event_flags") && try_link(<<~C)
+  #define HAVE_RUBY_VM_EVENT_FLAGS 1
+  #include "mri_compat.h"
+  int main(void) { return liquid_vm_tracing(); }
+C
+  $defs << "-DHAVE_RUBY_VM_EVENT_FLAGS"
 end
 
 $warnflags&.gsub!("-Wdeclaration-after-statement", "")

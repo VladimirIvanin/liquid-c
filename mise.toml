@@ -45,6 +45,25 @@ description = "Compile the extension and run the compatibility suite"
 env = { LIQUID_C_PEDANTIC = "true" }
 run = "bundle exec rake test"
 
+[tasks."test:insales"]
+description = "Run the unit and compatibility suites with the InSales native parser"
+tools = { ruby = "3.2.11" }
+env = { LIQUID_C_PEDANTIC = "true" }
+shell = "bash -euo pipefail -c"
+run = '''
+mkdir -p tmp
+suite_dir=$(mktemp -d "$PWD/tmp/test-insales.XXXXXX")
+echo "InSales test workspace: $suite_dir"
+git ls-files -co --exclude-standard -z | rsync -a --from0 --files-from=- --ignore-missing-args ./ "$suite_dir/"
+cd "$suite_dir"
+bundle check || bundle install
+bundle exec rake compile
+bundle exec ruby -Ilib -rliquid/c -e 'abort "Guarded native parser unavailable on #{RUBY_DESCRIPTION}" unless Liquid::C::NativeParser::NATIVE_GUARDS'
+bundle exec rake test
+cd ..
+rm -rf -- "$suite_dir"
+'''
+
 [tasks.valgrind]
 description = "Run unit and integration tests under Valgrind"
 run = "bundle exec rake test:valgrind"

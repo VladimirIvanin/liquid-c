@@ -24,6 +24,31 @@ class NativeCompilerTest < Minitest::Test
     RUBY
   end
 
+  def test_tag_opt_out_is_refreshed_after_a_custom_tag
+    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
+
+    isolated(<<~'RUBY')
+      counts = []
+      switch = Class.new(Liquid::Tag) do
+        define_method(:initialize) do |name, markup, context|
+          super(name, markup, context)
+          counts << ObjectSpace.each_object(Liquid::Parser).count
+          ENV["LIQUID_C_NATIVE_TAGS"] = markup.strip
+        end
+      end
+      env = Liquid::Environment.build { |e| e.register_tag("switch_tags", switch) }
+      GC.disable
+      template = parse("{% switch_tags true %}{% capture a %}A{% endcapture %}" \
+        "{% switch_tags false %}{% capture b %}B{% endcapture %}" \
+        "{% switch_tags true %}{% capture c %}C{% endcapture %}" \
+        "{% switch_tags true %}{{ a }}{{ b }}{{ c }}", environment: env)
+      check("ABC", template.render!)
+      check(counts[0], counts[1])
+      raise "Ruby parser did not handle the disabled capture" unless counts[2] > counts[1]
+      check(counts[2], counts[3])
+    RUBY
+  end
+
   def test_capture_falls_back_for_invalid_headers_and_other_modes
     isolated(<<~'RUBY')
       ["name extra", "", "contains", "name?", "a.b", "123", " name\0"].each do |header|

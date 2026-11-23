@@ -1,8 +1,8 @@
 #include "liquid.h"
+#include "mri_compat.h"
 #include "context.h"
 
 #ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
-extern const void *rb_callable_method_entry(VALUE klass, ID mid);
 static VALUE identity_entries[8];
 static bool identity_registered;
 static VALUE register_identity_methods(VALUE self, VALUE enabled)
@@ -14,7 +14,7 @@ static VALUE register_identity_methods(VALUE self, VALUE enabled)
         rb_cTrueClass, rb_cFalseClass, rb_cNilClass };
     for (long i = 0; i < 8; i++) {
         identity_entries[i] = RTEST(RARRAY_AREF(enabled, i)) ?
-            (VALUE)rb_callable_method_entry(owners[i], id_to_liquid) : 0;
+            liquid_method_entry(owners[i], id_to_liquid) : 0;
         rb_gc_register_address(&identity_entries[i]);
     }
     identity_registered = true;
@@ -36,7 +36,7 @@ VALUE liquid_value_to_liquid(VALUE value)
         default: index = -1; break;
     }
     if (index >= 0 && identity_entries[index] && identity_entries[index] ==
-        (VALUE)rb_callable_method_entry(CLASS_OF(value), id_to_liquid)) return value;
+        liquid_method_entry(CLASS_OF(value), id_to_liquid)) return value;
     return rb_funcall(value, id_to_liquid, 0);
 }
 #endif

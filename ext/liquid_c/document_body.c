@@ -84,11 +84,16 @@ void document_body_truncate(VALUE self, size_t buffer_size, long constants_len, 
     assert(constants_len <= RARRAY_LEN(body->constants));
     assert(serial <= body->next_serial);
     if (serial < body->next_serial)
-        c_buffer_reserve_for_write(&body->invalid_serials, 2 * sizeof(size_t));
+        c_buffer_reserve_for_write(&body->invalid_serials, sizeof(serial_range_t));
     rb_ary_resize(body->constants, constants_len);
     if (serial < body->next_serial) {
-        size_t range[2] = { serial + 1, body->next_serial };
-        c_buffer_write(&body->invalid_serials, range, sizeof(range));
+        serial_range_t range = { serial + 1, body->next_serial };
+        // An enclosing case invalidates every range recorded since its checkpoint.
+        serial_range_t *start = (serial_range_t *)body->invalid_serials.data;
+        serial_range_t *end = (serial_range_t *)body->invalid_serials.data_end;
+        while (end > start && end[-1].first >= range.first) end--;
+        body->invalid_serials.data_end = (uint8_t *)end;
+        c_buffer_write(&body->invalid_serials, &range, sizeof(range));
     }
     if (buffer_size == 0) c_buffer_free(&body->buffer);
     else body->buffer.data_end = body->buffer.data + buffer_size;

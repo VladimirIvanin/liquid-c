@@ -1,4 +1,5 @@
 #include "liquid.h"
+#include "mri_compat.h"
 #include "parser.h"
 #include "document_body.h"
 #include "variable.h"
@@ -22,7 +23,7 @@ typedef struct {
 enum { N_END = 256, N_ID, N_NUMBER, N_STRING, N_DOTDOT, N_COMPARE, N_UNSUPPORTED };
 
 static ID id_name, id_lookups, id_commands, id_start, id_end;
-static ID id_string_scanner, id_new_native, id_allocate_native, id_freeze_native;
+static ID id_string_scanner, id_new_native, id_allocate_native;
 static ID id_disabled_native, id_mode_native, id_cache_native;
 static ID id_options_native, id_stats_native, id_enabled_native, id_parse_context_native, id_for_fields[6];
 static VALUE native_context_class, native_case_class, native_if_class, native_unless_class, native_for_class;
@@ -53,7 +54,6 @@ static VALUE native_hash_property(VALUE hash, size_t reader)
 {
     if (CLASS_OF(hash) != rb_cHash) return Qundef;
 #ifdef HAVE_RB_HASH_COMPARE_BY_ID_P
-    extern VALUE rb_hash_compare_by_id_p(VALUE hash);
     if (reader == HASH_IDENTITY_READER) return rb_hash_compare_by_id_p(hash);
 #endif
     if (NIL_P(native_hash_readers[reader])) return Qundef;
@@ -75,22 +75,42 @@ static VALUE native_capture_constant(VALUE owner, const char *name)
     return rb_const_get_at(owner, id);
 }
 
-static struct { VALUE owner, entry; ID method; bool public_call; } primitive_guards[96];
+typedef struct { VALUE owner; ID method; bool public_call; } primitive_guard_t;
+static primitive_guard_t primitive_guards[96];
 static size_t primitive_guard_count;
 
 static void native_guard_primitive(VALUE owner, const char *method)
 {
     if (primitive_guard_count >= sizeof(primitive_guards) / sizeof(primitive_guards[0]))
         rb_raise(rb_eRuntimeError, "too many native primitive guards");
-    primitive_guards[primitive_guard_count].owner = owner;
-    rb_gc_register_address(&primitive_guards[primitive_guard_count].entry);
-    primitive_guards[primitive_guard_count].public_call = strcmp(method, "initialize_copy") && strcmp(method, "initialize_dup");
-    primitive_guards[primitive_guard_count++].method = rb_intern(method);
+    primitive_guard_t *guard = &primitive_guards[primitive_guard_count++];
+    guard->owner = owner;
+    guard->method = rb_intern(method);
+    guard->public_call = strcmp(method, "initialize_copy") && strcmp(method, "initialize_dup");
+}
+
+static bool native_primitives_standard(bool check_visibility)
+{
+    for (size_t i = 0; i < primitive_guard_count; i++) {
+        const primitive_guard_t *guard = &primitive_guards[i];
+        if (!liquid_method_basic_definition_p(guard->owner, guard->method)) return false;
+        if (check_visibility && guard->public_call && rb_method_boundp(guard->owner, guard->method, 3) != 1) return false;
+    }
+    return true;
 }
 
 static VALUE native_public_method(VALUE self, VALUE receiver, VALUE name)
 {
     return rb_method_boundp(CLASS_OF(receiver), SYM2ID(name), 3) == 1 ? Qtrue : Qfalse;
+}
+
+static bool native_snapshot_matches(VALUE value, VALUE snapshot)
+{
+    if (NIL_P(snapshot)) return true;
+    if (!RB_TYPE_P(value, T_ARRAY) || !RB_TYPE_P(snapshot, T_ARRAY) || RARRAY_LEN(value) != RARRAY_LEN(snapshot)) return false;
+    for (long i = 0; i < RARRAY_LEN(snapshot); i++)
+        if (RARRAY_AREF(value, i) != RARRAY_AREF(snapshot, i)) return false;
+    return true;
 }
 
 static VALUE native_constant_matches(VALUE self, VALUE owner, VALUE name, VALUE expected, VALUE snapshot)
@@ -99,12 +119,7 @@ static VALUE native_constant_matches(VALUE self, VALUE owner, VALUE name, VALUE 
     Check_Type(name, T_SYMBOL);
     ID id = SYM2ID(name);
     if (!rb_const_defined_at(owner, id) || RTEST(native_autoload_p(owner, id)) || rb_const_get_at(owner, id) != expected) return Qfalse;
-    if (!NIL_P(snapshot)) {
-        if (!RB_TYPE_P(expected, T_ARRAY) || !RB_TYPE_P(snapshot, T_ARRAY) || RARRAY_LEN(expected) != RARRAY_LEN(snapshot)) return Qfalse;
-        for (long i = 0; i < RARRAY_LEN(expected); i++)
-            if (RARRAY_AREF(expected, i) != RARRAY_AREF(snapshot, i)) return Qfalse;
-    }
-    return Qtrue;
+    return native_snapshot_matches(expected, snapshot) ? Qtrue : Qfalse;
 }
 
 // Public reflection is portable but expensive. Amortize it only over complex
@@ -127,9 +142,6 @@ static VALUE native_frontend_candidate(VALUE self, VALUE markup)
 }
 
 #ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
-// Optional MRI capability. Only compare opaque entries; never depend on their
-// layout. Other Ruby implementations use the public Ruby reflection fallback.
-extern const void *rb_callable_method_entry(VALUE klass, ID mid);
 typedef struct { VALUE owner, entry, snapshot; ID method; int receiver; bool constant, public_call, builtin; } native_method_guard_t;
 static native_method_guard_t *method_guards;
 static long method_guard_count;
@@ -203,7 +215,7 @@ static VALUE native_register_guards(VALUE self, VALUE specifications, VALUE watc
         guard->builtin = !guard->constant && liquid_method_basic_definition_p(guard->owner, guard->method);
         guard->snapshot = RARRAY_AREF(spec, 4);
         guard->entry = guard->constant ? RARRAY_AREF(spec, 5) :
-            (VALUE)rb_callable_method_entry(guard->owner, guard->method);
+            liquid_method_entry(guard->owner, guard->method);
         if (!guard->constant && guard->owner == rb_cInteger && guard->method == rb_intern("to_i"))
             integer_to_i_entry = guard->entry;
     }
@@ -213,7 +225,7 @@ static VALUE native_register_guards(VALUE self, VALUE specifications, VALUE watc
 
 static bool native_method_guard_current(native_method_guard_t *guard)
 {
-    VALUE current = (VALUE)rb_callable_method_entry(guard->owner, guard->method);
+    VALUE current = liquid_method_entry(guard->owner, guard->method);
     if (!guard->entry) return false;
     if (guard->entry != current) {
         // MRI can recreate inherited entries for an unchanged core constructor.
@@ -224,12 +236,10 @@ static bool native_method_guard_current(native_method_guard_t *guard)
     return true;
 }
 
-static VALUE native_methods_compatible(VALUE self, VALUE context, VALUE variable)
+static bool native_guards_match(VALUE context, VALUE variable, bool cached_constants)
 {
-    VALUE epoch = native_constant_epoch();
     VALUE scanner = rb_ivar_get(context, id_string_scanner);
     VALUE receiver_classes[] = { Qnil, CLASS_OF(context), CLASS_OF(scanner), NIL_P(variable) ? Qnil : CLASS_OF(variable) };
-    bool cached_constants = epoch != Qundef && epoch == constant_epoch;
     for (long i = 0; i < method_guard_count; i++) {
         native_method_guard_t *guard = &method_guards[i];
         if (guard->constant) {
@@ -237,26 +247,29 @@ static VALUE native_methods_compatible(VALUE self, VALUE context, VALUE variable
                 // Reader ISeqs are rooted in constant_watchers. MRI invalidates
                 // their registered IC sites even before they are read again.
                 // Mutable table slots must still be checked on every operation.
-                if (!NIL_P(guard->snapshot)) {
-                    if (RARRAY_LEN(guard->entry) != RARRAY_LEN(guard->snapshot)) return Qfalse;
-                    for (long j = 0; j < RARRAY_LEN(guard->entry); j++)
-                        if (RARRAY_AREF(guard->entry, j) != RARRAY_AREF(guard->snapshot, j)) return Qfalse;
-                }
-            } else if (!RTEST(native_constant_matches(Qnil, guard->owner, ID2SYM(guard->method), guard->entry, guard->snapshot))) return Qfalse;
+                if (!native_snapshot_matches(guard->entry, guard->snapshot)) return false;
+            } else if (!RTEST(native_constant_matches(Qnil, guard->owner, ID2SYM(guard->method), guard->entry, guard->snapshot))) return false;
             continue;
         }
-        if (!native_method_guard_current(guard)) return Qfalse;
-        if (guard->public_call && rb_method_boundp(guard->owner, guard->method, 3) != 1) return Qfalse;
+        if (!native_method_guard_current(guard)) return false;
+        if (guard->public_call && rb_method_boundp(guard->owner, guard->method, 3) != 1) return false;
         if (guard->receiver) {
             if (guard->receiver == 3 && NIL_P(variable)) continue;
             VALUE target_class = receiver_classes[guard->receiver];
-            if (guard->receiver == 2 && RB_OBJ_FROZEN(scanner)) return Qfalse;
+            if (guard->receiver == 2 && RB_OBJ_FROZEN(scanner)) return false;
             // Standard receivers have the same class already checked above.
             // Singleton classes still require their own current method lookup.
             if (target_class != guard->owner &&
-                guard->entry != (VALUE)rb_callable_method_entry(target_class, guard->method)) return Qfalse;
+                guard->entry != liquid_method_entry(target_class, guard->method)) return false;
         }
     }
+    return true;
+}
+
+static VALUE native_methods_compatible(VALUE self, VALUE context, VALUE variable)
+{
+    VALUE epoch = native_constant_epoch();
+    if (!native_guards_match(context, variable, epoch != Qundef && epoch == constant_epoch)) return Qfalse;
     if (epoch != Qundef && epoch != native_constant_epoch()) return Qfalse;
     constant_epoch = epoch;
     return Qtrue;
@@ -272,7 +285,7 @@ static bool native_conversion_is_standard(VALUE value)
     if (liquid_method_basic_definition_p(klass, rb_intern("to_i"))) return true;
 #ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
     return RB_INTEGER_TYPE_P(value) && integer_to_i_entry && integer_to_i_entry ==
-        (VALUE)rb_callable_method_entry(CLASS_OF(value), rb_intern("to_i"));
+        liquid_method_entry(CLASS_OF(value), rb_intern("to_i"));
 #else
     return false;
 #endif
@@ -360,6 +373,8 @@ static VALUE native_key(native_parser_t *p, size_t start, size_t end)
     return key;
 }
 
+// A finalizer can redefine a guarded method during allocation. Drop the pending
+// parse before publishing cache entries or bytecode based on the old definition.
 static bool native_gc_changed(const native_parser_t *p)
 {
     return p->guarded && p->initial_gc_count != liquid_gc_count();
@@ -398,10 +413,9 @@ static VALUE native_cached(native_parser_t *p, size_t start, size_t end, VALUE v
     if (NIL_P(p->pending) || (p->compact_pending && RB_TYPE_P(p->pending, T_STRING))) {
         VALUE previous_key = p->pending;
         p->pending = rb_hash_new();
-        if (native_gc_changed(p)) return Qundef;
         if (!NIL_P(previous_key)) {
-            rb_hash_aset(p->pending, previous_key, p->pending_value);
             if (native_gc_changed(p)) return Qundef;
+            rb_hash_aset(p->pending, previous_key, p->pending_value);
         }
         RB_GC_GUARD(previous_key);
     }
@@ -1071,9 +1085,7 @@ static VALUE native_variable_unpin(VALUE opaque)
 
 static bool native_payload_methods_standard(int operation)
 {
-    for (size_t i = 0; i < primitive_guard_count; i++)
-        if (!liquid_method_basic_definition_p(primitive_guards[i].owner, primitive_guards[i].method) ||
-            (primitive_guards[i].public_call && rb_method_boundp(primitive_guards[i].owner, primitive_guards[i].method, 3) != 1)) return false;
+    if (!native_primitives_standard(true)) return false;
     VALUE constructors[] = { cLiquidVariableLookup, cLiquidRangeLookup, native_parser_class };
     for (size_t i = 0; i < sizeof(constructors) / sizeof(constructors[0]); i++) {
         VALUE owner = CLASS_OF(constructors[i]);
@@ -1089,9 +1101,6 @@ static bool native_payload_methods_standard(int operation)
         if (!liquid_method_basic_definition_p(owner, id_new_native) ||
             !liquid_method_basic_definition_p(owner, id_allocate_native)) return false;
     }
-    if (!liquid_method_basic_definition_p(cLiquidVariableLookup, id_freeze_native) ||
-        !liquid_method_basic_definition_p(cLiquidRangeLookup, id_freeze_native) ||
-        !liquid_method_basic_definition_p(rb_cRange, id_freeze_native)) return false;
     return true;
 }
 
@@ -1167,14 +1176,10 @@ static VALUE native_record_stats(VALUE self, VALUE context, VALUE reason)
     return Qnil;
 }
 
-#ifdef HAVE_RUBY_VM_EVENT_FLAGS
-extern rb_event_flag_t ruby_vm_event_flags;
-#endif
-
 static VALUE native_parser_tracing(VALUE self)
 {
 #ifdef HAVE_RUBY_VM_EVENT_FLAGS
-    return ruby_vm_event_flags ? Qtrue : Qfalse;
+    return liquid_vm_tracing() ? Qtrue : Qfalse;
 #else
     // Portable frontend checks methods before and after construction; the
     // single-operation optimization above requires the optional tracing flag.
@@ -1182,12 +1187,19 @@ static VALUE native_parser_tracing(VALUE self)
 #endif
 }
 
-#if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
+#ifdef LIQUID_HAVE_GUARDED_COMPILER
 
+static bool native_opted_out(const char *option)
+{
+    const char *value = getenv(option);
+    return value && !strcmp(value, "false");
+}
 
-// One guarded operation: default constructors, numeric conversions and hash
-// keys cannot call Ruby here. Recheck after a GC (finalizers may redefine code).
-// TracePoint callbacks use the original parser rather than speculative parsing.
+static bool native_parse_interrupted(size_t gc_before)
+{
+    return gc_before != liquid_gc_count() || liquid_vm_tracing();
+}
+
 static bool native_bare_identifier(VALUE markup)
 {
     if (!RB_TYPE_P(markup, T_STRING)) return false;
@@ -1233,7 +1245,7 @@ static VALUE native_variable_guard_failure(VALUE self, VALUE markup, VALUE conte
 static VALUE native_try_variable_impl(VALUE self, VALUE markup, VALUE context, VALUE variable, bool retry)
 {
     if (!method_guard_count) return Qnil;
-    if (ruby_vm_event_flags) return Qnil;
+    if (liquid_vm_tracing()) return Qnil;
     if (rb_obj_class(context) != native_context_class || rb_obj_class(variable) != cLiquidVariable) return Qnil;
     VALUE early_cache = rb_ivar_get(context, id_cache_native);
     // Reject costly short unique forms before environment/method checks.
@@ -1259,8 +1271,7 @@ static VALUE native_try_variable_impl(VALUE self, VALUE markup, VALUE context, V
         native_record_stats(self, context, ID2SYM(rb_intern("context")));
         return Qnil;
     }
-    const char *optout = getenv("LIQUID_C_NATIVE_PARSER");
-    if (!RTEST(rb_ivar_get(mLiquidC, id_enabled_native)) || (optout && !strcmp(optout, "false"))) {
+    if (!RTEST(rb_ivar_get(mLiquidC, id_enabled_native)) || native_opted_out("LIQUID_C_NATIVE_PARSER")) {
         native_record_stats(self, context, ID2SYM(rb_intern("disabled")));
         return Qnil;
     }
@@ -1272,7 +1283,7 @@ static VALUE native_try_variable_impl(VALUE self, VALUE markup, VALUE context, V
         if (!RTEST(native_methods_compatible(self, context, variable)) || liquid_gc_count() != guard_gc)
             return native_variable_guard_failure(self, markup, context, variable, retry);
     }
-    if (ruby_vm_event_flags) return Qnil;
+    if (liquid_vm_tracing()) return Qnil;
     if (RTEST(rb_ivar_get(context, id_disabled_native))) {
         native_record_stats(self, context, ID2SYM(rb_intern("disabled")));
         return Qnil;
@@ -1298,7 +1309,7 @@ static VALUE native_try_variable_impl(VALUE self, VALUE markup, VALUE context, V
         native_record_stats(self, context, ID2SYM(rb_intern("syntax")));
         return Qnil;
     }
-    if (ruby_vm_event_flags) return Qnil;
+    if (liquid_vm_tracing()) return Qnil;
     if (liquid_gc_count() != gc_count && !RTEST(native_methods_compatible(self, context, variable))) return Qnil;
     native_publish_cache(self, cache, RARRAY_AREF(result, 2));
     native_record_stats(self, context, ID2SYM(rb_intern("accepted")));
@@ -1376,9 +1387,9 @@ static VALUE native_strict_body(VALUE opaque)
     VALUE klass = rb_obj_class(args->self);
     int index = klass == native_if_class ? 0 : (klass == native_unless_class ? 1 : (klass == native_for_class ? 2 : -1));
     if (index >= 0 && !(index == 2 && RB_OBJ_FROZEN(args->self)) &&
-        native_context_entries[index] == (VALUE)rb_callable_method_entry(CLASS_OF(args->self), id_strict_context_native) &&
+        native_context_entries[index] == liquid_method_entry(CLASS_OF(args->self), id_strict_context_native) &&
         (index == 2 ? native_for_parse_entry : native_if_parse_entry) ==
-            (VALUE)rb_callable_method_entry(CLASS_OF(args->self), id_strict_parse_native) &&
+            liquid_method_entry(CLASS_OF(args->self), id_strict_parse_native) &&
         RTEST(native_case_candidate(Qnil, args->markup, Qnil))) {
         VALUE helper = rb_const_get(mLiquidC, rb_intern("NativeTags"));
         VALUE kind = ID2SYM(rb_intern(index == 2 ? "for" : "condition"));
@@ -1432,10 +1443,10 @@ static VALUE native_install_header_parser(VALUE self, VALUE original, VALUE for_
 #ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
     if (RTEST(for_tag)) {
         native_original_for = original;
-        native_for_parse_entry = (VALUE)rb_callable_method_entry(native_for_class, rb_intern("strict_parse"));
+        native_for_parse_entry = liquid_method_entry(native_for_class, rb_intern("strict_parse"));
     } else {
         native_original_if = original;
-        native_if_parse_entry = (VALUE)rb_callable_method_entry(native_if_class, rb_intern("strict_parse"));
+        native_if_parse_entry = liquid_method_entry(native_if_class, rb_intern("strict_parse"));
     }
 #endif
     return Qnil;
@@ -1450,7 +1461,7 @@ static VALUE native_install_strict_context(VALUE self)
     rb_define_private_method(native_switching_module, "strict_parse_with_error_context", native_strict_context, 1);
     VALUE classes[] = { native_if_class, native_unless_class, native_for_class };
     for (size_t i = 0; i < 3; i++)
-        native_context_entries[i] = (VALUE)rb_callable_method_entry(classes[i], id_strict_context_native);
+        native_context_entries[i] = liquid_method_entry(classes[i], id_strict_context_native);
 #endif
     return Qnil;
 }
@@ -1464,7 +1475,7 @@ static VALUE native_install_case_parser(VALUE self)
 static VALUE native_variable_frontend(VALUE self, VALUE markup, VALUE context, VALUE variable)
 {
     if (!native_variable_ready) return Qnil;
-#if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
+#ifdef LIQUID_HAVE_GUARDED_COMPILER
     return native_try_variable(self, markup, context, variable);
 #else
     if (!RTEST(native_variable_candidate(self, markup, context))) return Qnil;
@@ -1485,7 +1496,7 @@ static VALUE native_enable_variable_frontend(VALUE self)
     return Qnil;
 }
 
-#if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
+#ifdef LIQUID_HAVE_GUARDED_COMPILER
 static struct { VALUE owner, entry; ID method; bool public_call, control, builtin; } compiler_methods[256];
 static size_t compiler_method_count;
 static VALUE renderer_guard_entries = Qnil;
@@ -1532,7 +1543,7 @@ static VALUE native_register_control(VALUE self, VALUE helpers, VALUE constants,
     native_assign_class = rb_const_get(mLiquid, rb_intern("Assign"));
     native_capture_class = rb_const_get(mLiquid, rb_intern("Capture"));
     native_include_class = rb_const_get(mLiquid, rb_intern("Include"));
-    control_tag_new_entry = (VALUE)rb_callable_method_entry(CLASS_OF(native_if_class), rb_intern("new"));
+    control_tag_new_entry = liquid_method_entry(CLASS_OF(native_if_class), rb_intern("new"));
     for (size_t i = 0; i < 2; i++) {
         VALUE helper = RARRAY_AREF(helpers, i);
         if (!rb_obj_is_kind_of(helper, rb_const_get(rb_cObject, rb_intern("UnboundMethod"))))
@@ -1567,7 +1578,7 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
         VALUE spec = RARRAY_AREF(specifications, i);
         VALUE owner = RARRAY_AREF(spec, 0);
         ID method = SYM2ID(RARRAY_AREF(spec, 1));
-        VALUE entry = (VALUE)rb_callable_method_entry(owner, method);
+        VALUE entry = liquid_method_entry(owner, method);
         compiler_methods[i].control = RTEST(RARRAY_AREF(spec, 2));
         compiler_methods[i].builtin = liquid_method_basic_definition_p(owner, method);
         compiler_methods[i].owner = owner;
@@ -1587,19 +1598,14 @@ static VALUE native_register_compiler(VALUE self, VALUE specifications, VALUE en
     const char *names[] = { "render", "render_to_output_buffer", "render_obj_to_output" };
     for (size_t i = 0; i < 3; i++) {
         renderer_ids[i] = rb_intern(names[i]);
-        VALUE entry = renderers_standard ? (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]) : 0;
+        VALUE entry = renderers_standard ? liquid_method_entry(cLiquidVariable, renderer_ids[i]) : 0;
         rb_ary_push(renderer_guard_entries, entry);
     }
     compiler_ready = RTEST(enabled);
     if (!liquid_method_basic_definition_p(native_unbound_class, rb_intern("==")) ||
         !liquid_method_basic_definition_p(native_unbound_class, rb_intern("super_method")) ||
         !liquid_method_basic_definition_p(native_unbound_class, rb_intern("bind_call"))) compiler_ready = false;
-    for (size_t i = 0; i < primitive_guard_count; i++) {
-        VALUE owner = primitive_guards[i].owner;
-        ID method = primitive_guards[i].method;
-        if (!liquid_method_basic_definition_p(owner, method)) compiler_ready = false;
-        primitive_guards[i].entry = (VALUE)rb_callable_method_entry(owner, method);
-    }
+    if (!native_primitives_standard(false)) compiler_ready = false;
     if (!NIL_P(constant_vm) && liquid_method_basic_definition_p(CLASS_OF(constant_vm), id_stat))
         compiler_stat = liquid_method_handle(rb_obj_method(constant_vm, ID2SYM(id_stat)));
     return compiler_ready ? Qtrue : Qfalse;
@@ -1609,7 +1615,7 @@ bool variable_render_methods_standard(void)
 {
     if (!compiler_registered) return false;
     for (size_t i = 0; i < 3; i++) {
-        VALUE current = (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[i]);
+        VALUE current = liquid_method_entry(cLiquidVariable, renderer_ids[i]);
         if (RARRAY_AREF(renderer_guard_entries, i) == current) continue;
         // Re-aliasing a builtin creates a new method entry with the same body.
         size_t gc = liquid_gc_count();
@@ -1617,7 +1623,7 @@ bool variable_render_methods_standard(void)
         if (gc != liquid_gc_count()) return false;
         if (!standard) return false;
         for (size_t j = 0; j < 3; j++)
-            rb_ary_store(renderer_guard_entries, (long)j, (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[j]));
+            rb_ary_store(renderer_guard_entries, (long)j, liquid_method_entry(cLiquidVariable, renderer_ids[j]));
         break;
     }
     return true;
@@ -1625,13 +1631,29 @@ bool variable_render_methods_standard(void)
 
 bool variable_render_traced(void)
 {
-    return ruby_vm_event_flags != 0;
+    return liquid_vm_tracing();
 }
 
 bool variable_output_method_standard(void)
 {
-    return compiler_ready && !ruby_vm_event_flags && RARRAY_AREF(renderer_guard_entries, 2) ==
-        (VALUE)rb_callable_method_entry(cLiquidVariable, renderer_ids[2]);
+    return compiler_ready && !liquid_vm_tracing() && RARRAY_AREF(renderer_guard_entries, 2) ==
+        liquid_method_entry(cLiquidVariable, renderer_ids[2]);
+}
+
+static bool native_compiler_method_entries_match(bool control)
+{
+    for (size_t i = 0; i < compiler_method_count; i++) {
+        if (compiler_methods[i].control != control) continue;
+        VALUE owner = compiler_methods[i].owner;
+        ID method = compiler_methods[i].method;
+        VALUE current_entry = liquid_method_entry(owner, method);
+        if (compiler_methods[i].entry != current_entry) {
+            if (!compiler_methods[i].builtin || !liquid_method_basic_definition_p(owner, method)) return false;
+            compiler_methods[i].entry = current_entry;
+        }
+        if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
+    }
+    return true;
 }
 
 static bool native_compiler_methods_standard(variable_parse_args_t *args)
@@ -1640,45 +1662,14 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
     if (rb_get_alloc_func(compiler_body_class) != compiler_body_allocator) return false;
     if (CLASS_OF(context) != native_context_class || (!NIL_P(args->code_obj) && CLASS_OF(args->code_obj) != compiler_body_class)) return false;
     size_t validation_gc = liquid_gc_count();
-    VALUE scanner = rb_ivar_get(context, id_string_scanner);
-    VALUE receiver_classes[] = { Qnil, CLASS_OF(context), CLASS_OF(scanner) };
     VALUE epoch = Qundef;
     if (!NIL_P(compiler_stat)) {
         VALUE key = ID2SYM(id_constant_invalidations);
         epoch = liquid_method_call(1, &key, compiler_stat);
     }
     bool unchanged_constants = epoch != Qundef && epoch == compiler_epoch;
-    for (long i = 0; i < method_guard_count; i++) {
-        native_method_guard_t *guard = &method_guards[i];
-        if (guard->constant) {
-            if (!unchanged_constants) {
-                if (!RTEST(native_constant_matches(Qnil, guard->owner, ID2SYM(guard->method), guard->entry, guard->snapshot))) return false;
-            } else if (!NIL_P(guard->snapshot)) {
-                if (RARRAY_LEN(guard->entry) != RARRAY_LEN(guard->snapshot)) return false;
-                for (long j = 0; j < RARRAY_LEN(guard->entry); j++)
-                    if (RARRAY_AREF(guard->entry, j) != RARRAY_AREF(guard->snapshot, j)) return false;
-            }
-        } else {
-            if (!native_method_guard_current(guard)) return false;
-            if (guard->public_call && rb_method_boundp(guard->owner, guard->method, 3) != 1) return false;
-            if (guard->receiver && guard->receiver != 3) {
-                VALUE klass = receiver_classes[guard->receiver];
-                if (guard->receiver == 2 && RB_OBJ_FROZEN(scanner)) return false;
-                if (klass != guard->owner && guard->entry != (VALUE)rb_callable_method_entry(klass, guard->method)) return false;
-            }
-        }
-    }
-    for (size_t i = 0; i < compiler_method_count; i++) {
-        if (compiler_methods[i].control) continue;
-        VALUE owner = compiler_methods[i].owner;
-        ID method = compiler_methods[i].method;
-        VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
-        if (compiler_methods[i].entry != current_entry) {
-            if (!compiler_methods[i].builtin || !liquid_method_basic_definition_p(owner, method)) return false;
-            compiler_methods[i].entry = current_entry;
-        }
-        if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
-    }
+    if (!native_guards_match(context, Qnil, unchanged_constants)) return false;
+    if (!native_compiler_method_entries_match(false)) return false;
     if (NIL_P(compiler_constants)) return false;
     if (!unchanged_constants || NIL_P(compiler_constant_watchers)) {
         for (long i = 0; i < RARRAY_LEN(compiler_constants); i++) {
@@ -1692,16 +1683,7 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
     if (!liquid_method_basic_definition_p(klass, id_new_native) ||
         !liquid_method_basic_definition_p(klass, id_allocate_native) ||
         rb_get_alloc_func(cLiquidVariable) != rb_get_alloc_func(rb_cObject)) return false;
-    for (size_t i = 0; i < primitive_guard_count; i++) {
-        VALUE owner = primitive_guards[i].owner;
-        ID method = primitive_guards[i].method;
-        VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
-        if (primitive_guards[i].entry != current_entry) {
-            if (!liquid_method_basic_definition_p(owner, method)) return false;
-            primitive_guards[i].entry = current_entry;
-        }
-        if (primitive_guards[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
-    }
+    if (!native_primitives_standard(true)) return false;
     if (rb_get_alloc_func(cLiquidVariableLookup) != rb_get_alloc_func(rb_cObject) ||
         rb_get_alloc_func(cLiquidRangeLookup) != rb_get_alloc_func(rb_cObject) ||
         rb_get_alloc_func(native_parser_class) != rb_get_alloc_func(rb_cObject)) return false;
@@ -1723,17 +1705,7 @@ static bool native_compiler_methods_standard(variable_parse_args_t *args)
 // A variable-only interval need not validate unrelated tag implementations.
 static bool native_control_methods_standard(void)
 {
-    for (size_t i = 0; i < compiler_method_count; i++) {
-        if (!compiler_methods[i].control) continue;
-        VALUE owner = compiler_methods[i].owner;
-        ID method = compiler_methods[i].method;
-        VALUE current_entry = (VALUE)rb_callable_method_entry(owner, method);
-        if (compiler_methods[i].entry != current_entry) {
-            if (!compiler_methods[i].builtin || !liquid_method_basic_definition_p(owner, method)) return false;
-            compiler_methods[i].entry = current_entry;
-        }
-        if (compiler_methods[i].public_call && rb_method_boundp(owner, method, 3) != 1) return false;
-    }
+    if (!native_compiler_method_entries_match(true)) return false;
     if (NIL_P(compiler_constants)) return false;
     for (long i = 0; i < RARRAY_LEN(compiler_constants); i++) {
         VALUE spec = RARRAY_AREF(compiler_constants, i);
@@ -1753,13 +1725,11 @@ static bool native_control_methods_standard(void)
 
 static VALUE native_fast_header(VALUE self, VALUE markup)
 {
-    if (!compiler_ready || ruby_vm_event_flags) return Qundef;
+    if (!compiler_ready || liquid_vm_tracing()) return Qundef;
     VALUE klass = CLASS_OF(self);
     bool condition = klass == native_if_class || klass == native_unless_class;
     if (!condition && klass != native_for_class) return Qundef;
-    const char *optout = getenv("LIQUID_C_NATIVE_TAGS");
-    const char *parser_optout = getenv("LIQUID_C_NATIVE_PARSER");
-    if ((optout && !strcmp(optout, "false")) || (parser_optout && !strcmp(parser_optout, "false"))) return Qundef;
+    if (native_opted_out("LIQUID_C_NATIVE_TAGS") || native_opted_out("LIQUID_C_NATIVE_PARSER")) return Qundef;
     VALUE context = rb_ivar_get(self, id_parse_context_native);
     VALUE mode = rb_ivar_get(context, id_mode_native);
     if (mode != ID2SYM(rb_intern("warn")) && mode != ID2SYM(rb_intern("strict"))) return Qundef;
@@ -1771,7 +1741,7 @@ static VALUE native_fast_header(VALUE self, VALUE markup)
         !liquid_method_basic_definition_p(CLASS_OF(native_condition_class), id_allocate_native))) return Qundef;
     VALUE cache = rb_ivar_get(context, id_cache_native);
     VALUE result = native_parse_payload(markup, RTEST(cache) ? cache : Qnil, condition ? 1 : 2, true, true, NULL);
-    if (NIL_P(result) || gc != liquid_gc_count() || ruby_vm_event_flags) return Qundef;
+    if (NIL_P(result) || native_parse_interrupted(gc)) return Qundef;
     VALUE payload = RARRAY_AREF(result, 0);
     native_publish_cache(Qnil, cache, RARRAY_AREF(result, 1));
     if (!condition) {
@@ -1799,7 +1769,7 @@ static void native_restore_assembler(vm_assembler_t *code, const vm_assembler_t 
 bool native_compiler_guard(variable_parse_args_t *args)
 {
     variable_compile_guard_t *guard = args->guard;
-    if (!compiler_ready || !guard || ruby_vm_event_flags || !method_guard_count) return false;
+    if (!compiler_ready || !guard || liquid_vm_tracing() || !method_guard_count) return false;
 #ifdef LIQUID_C_TEST_ALLOC_FAILURES
     if (!NIL_P(native_parser_test_callback)) return false;
 #endif
@@ -1811,11 +1781,9 @@ bool native_compiler_guard(variable_parse_args_t *args)
         if (mode != ID2SYM(rb_intern("lax")) && mode != ID2SYM(rb_intern("warn")) &&
             mode != ID2SYM(rb_intern("strict"))) return false;
 
-        const char *optout = getenv("LIQUID_C_NATIVE_COMPILER");
-        const char *parser_optout = getenv("LIQUID_C_NATIVE_PARSER");
-        if ((optout && !strcmp(optout, "false")) || (parser_optout && !strcmp(parser_optout, "false"))) return false;
+        if (native_opted_out("LIQUID_C_NATIVE_COMPILER") || native_opted_out("LIQUID_C_NATIVE_PARSER")) return false;
 
-        if (!native_compiler_methods_standard(args) || gc != liquid_gc_count() || ruby_vm_event_flags) return false;
+        if (!native_compiler_methods_standard(args) || native_parse_interrupted(gc)) return false;
         guard->valid = true;
         guard->gc_count = gc;
         guard->cache = rb_ivar_get(args->parse_context, id_cache_native);
@@ -1833,11 +1801,12 @@ bool native_control_guard(variable_parse_args_t *args)
     if (!args->guard->control_validated) {
         size_t gc = liquid_gc_count();
         bool standard = native_control_methods_standard();
-        if (gc != liquid_gc_count() || ruby_vm_event_flags) {
+        if (native_parse_interrupted(gc)) {
             args->guard->valid = false;
             return false;
         }
         if (!standard) return false;
+        args->guard->tags_enabled = !native_opted_out("LIQUID_C_NATIVE_TAGS");
         args->guard->control_validated = true;
     }
     return true;
@@ -1875,6 +1844,31 @@ static bool native_control_binding(VALUE lexical_owner, ID name, VALUE expected)
     return false;
 }
 
+// A result is publishable only while the checks made by native_compiler_guard
+// still hold. Use its GC count across all allocations for the tag or variable.
+static bool native_compiler_accepts_result(variable_compile_guard_t *guard, VALUE result)
+{
+    if (NIL_P(result) || native_parse_interrupted(guard->gc_count)) guard->valid = false;
+    return guard->valid;
+}
+
+static bool native_tag_constructor_standard(VALUE klass)
+{
+    return rb_get_alloc_func(klass) == rb_get_alloc_func(rb_cObject) &&
+        liquid_method_entry(CLASS_OF(klass), id_new_native) == control_tag_new_entry &&
+        liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native);
+}
+
+static VALUE native_tag_alloc(VALUE klass, VALUE name, VALUE markup, VALUE context, VALUE line)
+{
+    VALUE tag = rb_obj_alloc(klass);
+    rb_ivar_set(tag, rb_intern("@tag_name"), name);
+    rb_ivar_set(tag, rb_intern("@markup"), markup);
+    rb_ivar_set(tag, id_parse_context_native, context);
+    rb_ivar_set(tag, id_ivar_line_number, line);
+    return tag;
+}
+
 // Assign retains its ordinary Variable and Ruby renderer. Only supported,
 // non-diagnostic construction stays inside the current native parse interval.
 VALUE native_parse_assignment(variable_parse_args_t *args, VALUE klass, VALUE name, VALUE markup)
@@ -1885,11 +1879,7 @@ VALUE native_parse_assignment(variable_parse_args_t *args, VALUE klass, VALUE na
         !native_control_binding(native_assign_class, rb_intern("Regexp"), rb_cRegexp) ||
         !liquid_method_basic_definition_p(CLASS_OF(rb_cRegexp), last_match) ||
         rb_method_boundp(CLASS_OF(rb_cRegexp), last_match, 3) != 1) return Qundef;
-    const char *optout = getenv("LIQUID_C_NATIVE_TAGS");
-    if (optout && !strcmp(optout, "false")) return Qundef;
-    if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) ||
-        (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) != control_tag_new_entry ||
-        !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qundef;
+    if (!args->guard->tags_enabled || !native_tag_constructor_standard(klass)) return Qundef;
     native_parser_t lhs = { .source = markup, .length = (size_t)RSTRING_LEN(markup) };
     native_next(&lhs);
     if (lhs.token != N_ID || native_word(&lhs, "contains") ||
@@ -1898,32 +1888,21 @@ VALUE native_parse_assignment(variable_parse_args_t *args, VALUE klass, VALUE na
     while (position < lhs.length && native_space((unsigned char)RSTRING_PTR(markup)[position])) position++;
     if (position == lhs.length || RSTRING_PTR(markup)[position++] != '=') return Qundef;
     while (position < lhs.length && native_space((unsigned char)RSTRING_PTR(markup)[position])) position++;
-    size_t gc = liquid_gc_count();
     VALUE target = native_slice(&lhs, lhs.start, lhs.end);
     VALUE rhs = native_slice(&lhs, position, lhs.length);
-    if (gc != liquid_gc_count()) { args->guard->valid = false; return Qundef; }
+    if (!native_compiler_accepts_result(args->guard, rhs)) return Qundef;
     VALUE cache = args->guard->cache;
     VALUE parsed = native_parse_payload(rhs, RTEST(cache) ? cache : Qnil, 0, true, true, NULL);
-    if (NIL_P(parsed) || gc != liquid_gc_count() || ruby_vm_event_flags) {
-        args->guard->valid = false;
-        return Qundef;
-    }
-    VALUE line = rb_ivar_get(args->parse_context, rb_intern("@line_number"));
+    if (!native_compiler_accepts_result(args->guard, parsed)) return Qundef;
+    VALUE line = rb_ivar_get(args->parse_context, id_ivar_line_number);
     VALUE variable = variable_from_parse(rhs, args->parse_context, line, RARRAY_AREF(parsed, 0), RARRAY_AREF(parsed, 1));
-    if (gc != liquid_gc_count()) { args->guard->valid = false; return Qundef; }
-    VALUE tag = rb_obj_alloc(klass);
-    rb_ivar_set(tag, rb_intern("@tag_name"), name);
-    rb_ivar_set(tag, rb_intern("@markup"), markup);
-    rb_ivar_set(tag, id_parse_context_native, args->parse_context);
-    rb_ivar_set(tag, rb_intern("@line_number"), line);
+    if (!native_compiler_accepts_result(args->guard, variable)) return Qundef;
+    VALUE tag = native_tag_alloc(klass, name, markup, args->parse_context, line);
     rb_ivar_set(tag, rb_intern("@to"), target);
     rb_ivar_set(tag, rb_intern("@from"), variable);
-    if (gc != liquid_gc_count() || ruby_vm_event_flags) {
-        args->guard->valid = false;
-        return Qundef;
-    }
+    if (!native_compiler_accepts_result(args->guard, tag)) return Qundef;
     native_publish_cache(Qnil, cache, RARRAY_AREF(parsed, 2));
-    if (gc != liquid_gc_count()) args->guard->valid = false;
+    if (args->guard->gc_count != liquid_gc_count()) args->guard->valid = false;
     RB_GC_GUARD(parsed);
     RB_GC_GUARD(variable);
     RB_GC_GUARD(rhs);
@@ -1943,38 +1922,23 @@ VALUE native_parse_include(variable_parse_args_t *args, VALUE klass, VALUE name,
     if (!native_include_class_p(klass) ||
         rb_ivar_get(args->parse_context, id_mode_native) != ID2SYM(rb_intern("warn")) ||
         !native_control_guard(args)) return Qundef;
-    const char *optout = getenv("LIQUID_C_NATIVE_TAGS");
-    if (optout && !strcmp(optout, "false")) return Qundef;
-    if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) ||
-        (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) != control_tag_new_entry ||
-        !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qundef;
-    size_t gc = liquid_gc_count();
+    if (!args->guard->tags_enabled || !native_tag_constructor_standard(klass)) return Qundef;
     VALUE cache = args->guard->cache;
     VALUE parsed = native_parse_payload(markup, RTEST(cache) ? cache : Qnil, 4, true, true, args->guard);
-    if (NIL_P(parsed) || gc != liquid_gc_count() || ruby_vm_event_flags) {
-        args->guard->valid = false;
-        return Qundef;
-    }
+    if (!native_compiler_accepts_result(args->guard, parsed)) return Qundef;
     VALUE fields = RARRAY_AREF(parsed, 0);
     if (!RTEST(RARRAY_AREF(fields, 5)) &&
         (!liquid_method_basic_definition_p(rb_cFalseClass, rb_intern("==")) ||
         rb_method_boundp(rb_cFalseClass, rb_intern("=="), 3) != 1)) return Qundef;
-    VALUE tag = rb_obj_alloc(klass);
-    rb_ivar_set(tag, rb_intern("@tag_name"), name);
-    rb_ivar_set(tag, rb_intern("@markup"), markup);
-    rb_ivar_set(tag, id_parse_context_native, args->parse_context);
-    rb_ivar_set(tag, rb_intern("@line_number"), rb_ivar_get(args->parse_context, rb_intern("@line_number")));
+    VALUE tag = native_tag_alloc(klass, name, markup, args->parse_context, rb_ivar_get(args->parse_context, id_ivar_line_number));
     const char *names[] = { "@template_name_expr", "@variable_name_expr", "@alias_name", "@is_for_loop", "@attributes" };
     for (size_t i = 0; i < 5; i++) {
         if ((i == 1 && !RTEST(RARRAY_AREF(fields, 5))) || (i == 2 && NIL_P(RARRAY_AREF(fields, i)))) continue;
         rb_ivar_set(tag, rb_intern(names[i]), RARRAY_AREF(fields, i));
     }
-    if (gc != liquid_gc_count() || ruby_vm_event_flags) {
-        args->guard->valid = false;
-        return Qundef;
-    }
+    if (!native_compiler_accepts_result(args->guard, tag)) return Qundef;
     native_publish_cache(Qnil, cache, RARRAY_AREF(parsed, 1));
-    if (gc != liquid_gc_count()) args->guard->valid = false;
+    if (args->guard->gc_count != liquid_gc_count()) args->guard->valid = false;
     RB_GC_GUARD(parsed);
     return tag;
 }
@@ -1984,11 +1948,7 @@ VALUE native_parse_capture(variable_parse_args_t *args, VALUE klass, VALUE name,
     if (klass != native_capture_class ||
         rb_ivar_get(args->parse_context, id_mode_native) != ID2SYM(rb_intern("warn")) ||
         !native_control_guard(args)) return Qundef;
-    const char *optout = getenv("LIQUID_C_NATIVE_TAGS");
-    if (optout && !strcmp(optout, "false")) return Qundef;
-    if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) ||
-        (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) != control_tag_new_entry ||
-        !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native) ||
+    if (!args->guard->tags_enabled || !native_tag_constructor_standard(klass) ||
         rb_get_alloc_func(compiler_body_class) != compiler_body_allocator ||
         !liquid_method_basic_definition_p(CLASS_OF(compiler_body_class), id_new_native) ||
         !liquid_method_basic_definition_p(CLASS_OF(compiler_body_class), id_allocate_native)) return Qundef;
@@ -1998,19 +1958,11 @@ VALUE native_parse_capture(variable_parse_args_t *args, VALUE klass, VALUE name,
     size_t start = parser.start, end = parser.end;
     native_next(&parser);
     if (parser.token != N_END) return Qundef;
-    size_t gc = liquid_gc_count();
     VALUE target = native_slice(&parser, start, end);
-    VALUE tag = rb_obj_alloc(klass);
-    rb_ivar_set(tag, rb_intern("@tag_name"), name);
-    rb_ivar_set(tag, rb_intern("@markup"), markup);
-    rb_ivar_set(tag, id_parse_context_native, args->parse_context);
-    rb_ivar_set(tag, rb_intern("@line_number"), rb_ivar_get(args->parse_context, rb_intern("@line_number")));
+    VALUE tag = native_tag_alloc(klass, name, markup, args->parse_context, rb_ivar_get(args->parse_context, id_ivar_line_number));
     rb_ivar_set(tag, rb_intern("@blank"), Qtrue);
     rb_ivar_set(tag, rb_intern("@to"), target);
-    if (gc != liquid_gc_count() || ruby_vm_event_flags) {
-        args->guard->valid = false;
-        return Qundef;
-    }
+    if (!native_compiler_accepts_result(args->guard, tag)) return Qundef;
     RB_GC_GUARD(target);
     return tag;
 }
@@ -2049,13 +2001,12 @@ VALUE native_control_header(variable_parse_args_t *args, VALUE markup, int kind,
         VALUE mode = rb_ivar_get(args->parse_context, id_mode_native);
         if (mode != ID2SYM(rb_intern("warn")) && mode != ID2SYM(rb_intern("strict"))) return Qnil;
 
-        const char *optout = getenv("LIQUID_C_NATIVE_TAGS");
-        if (optout && !strcmp(optout, "false")) return Qnil;
+        if (!args->guard->tags_enabled) return Qnil;
         VALUE classes[] = { native_condition_class, control_else_class, native_if_class, native_unless_class, native_for_class };
         for (size_t i = 0; i < sizeof(classes) / sizeof(classes[0]); i++) {
             VALUE klass = classes[i];
             bool original_new = i < 2 ? liquid_method_basic_definition_p(CLASS_OF(klass), id_new_native) :
-                (VALUE)rb_callable_method_entry(CLASS_OF(klass), id_new_native) == control_tag_new_entry;
+                liquid_method_entry(CLASS_OF(klass), id_new_native) == control_tag_new_entry;
             if (rb_get_alloc_func(klass) != rb_get_alloc_func(rb_cObject) || !original_new ||
                 !liquid_method_basic_definition_p(CLASS_OF(klass), id_allocate_native)) return Qnil;
         }
@@ -2068,7 +2019,7 @@ VALUE native_control_header(variable_parse_args_t *args, VALUE markup, int kind,
     size_t gc = liquid_gc_count();
     VALUE cache = args->guard->cache;
     VALUE result = native_parse_payload(markup, RTEST(cache) ? cache : Qnil, kind == 1 ? 1 : 2, true, true, args->guard);
-    if (NIL_P(result) || gc != liquid_gc_count() || ruby_vm_event_flags) return Qnil;
+    if (NIL_P(result) || native_parse_interrupted(gc)) return Qnil;
     if (commit) native_publish_cache(Qnil, cache, RARRAY_AREF(result, 1));
     RB_GC_GUARD(result);
     return result;
@@ -2181,7 +2132,7 @@ void native_control_finish(variable_parse_args_t *args, VALUE tag, int kind)
 
 bool native_compile_variable(variable_parse_args_t *args, VALUE line_number)
 {
-    if (!compiler_ready || !args->guard || ruby_vm_event_flags) return false;
+    if (!compiler_ready || !args->guard || liquid_vm_tracing()) return false;
     // The tokenizer owns and pins the frozen source during parsing.
     VALUE source = args->source;
     size_t offset = (size_t)(args->markup - RSTRING_PTR(source));
@@ -2195,16 +2146,12 @@ bool native_compile_variable(variable_parse_args_t *args, VALUE line_number)
     if (!native_validate_variable(&probe, &validated_name)) return false;
     if (!native_compiler_guard(args)) return false;
     variable_compile_guard_t *guard = args->guard;
-    size_t gc = liquid_gc_count();
     parser.cache = RTEST(guard->cache) ? guard->cache : Qnil;
-    parser.initial_gc_count = gc;
+    parser.initial_gc_count = guard->gc_count;
     // The descriptor owns its markup bytes independently of the tokenizer.
     // Temporary parsing uses offsets into the tokenizer's pinned source.
     VALUE node = variable_placeholder_new(source, offset, length, args->parse_context, line_number);
-    if (gc != liquid_gc_count() || ruby_vm_event_flags) {
-        guard->valid = false;
-        return false;
-    }
+    if (!native_compiler_accepts_result(guard, node)) return false;
     vm_assembler_t saved = *args->code;
     size_t instruction_size = c_buffer_size(&saved.instructions);
     size_t constant_size = c_buffer_size(&saved.constants);
@@ -2217,8 +2164,7 @@ bool native_compile_variable(variable_parse_args_t *args, VALUE line_number)
     name_probe.end = validated_name.end;
     name_probe.token = validated_name.token;
     VALUE result = native_variable_body_probed((VALUE)&parser, &name_probe);
-    if (NIL_P(result) || gc != liquid_gc_count() || ruby_vm_event_flags) {
-        guard->valid = false;
+    if (!native_compiler_accepts_result(guard, result)) {
         native_restore_assembler(args->code, &saved, instruction_size, constant_size);
         return false;
     }
@@ -2227,7 +2173,7 @@ bool native_compile_variable(variable_parse_args_t *args, VALUE line_number)
     // Only builtin Hash operations on verified plain String keys execute here.
     if (RB_TYPE_P(parser.pending, T_STRING)) native_publish_entry(parser.pending, parser.pending_value, parser.cache);
     else native_publish_cache(Qnil, parser.cache, parser.pending);
-    if (gc != liquid_gc_count()) guard->valid = false;
+    if (guard->gc_count != liquid_gc_count()) guard->valid = false;
     RB_GC_GUARD(result);
     RB_GC_GUARD(node);
     RB_GC_GUARD(source);
@@ -2263,7 +2209,7 @@ bool variable_output_method_standard(void) { return false; }
 
 void liquid_define_native_parser(void)
 {
-#if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
+#ifdef LIQUID_HAVE_GUARDED_COMPILER
     rb_global_variable(&renderer_guard_entries);
     rb_global_variable(&compiler_body_class);
     rb_global_variable(&compiler_constants);
@@ -2353,7 +2299,6 @@ void liquid_define_native_parser(void)
     id_string_scanner = rb_intern("@string_scanner");
     id_new_native = rb_intern("new");
     id_allocate_native = rb_intern("allocate");
-    id_freeze_native = rb_intern("freeze");
     id_disabled_native = rb_intern("@liquid_c_nodes_disabled");
     id_mode_native = rb_intern("@error_mode");
     id_cache_native = rb_intern("@expression_cache");
@@ -2381,7 +2326,7 @@ void liquid_define_native_parser(void)
     native_if_class = rb_const_get(mLiquid, rb_intern("If"));
     native_unless_class = rb_const_get(mLiquid, rb_intern("Unless"));
     native_for_class = rb_const_get(mLiquid, rb_intern("For"));
-#if defined(HAVE_RB_CALLABLE_METHOD_ENTRY) && defined(HAVE_RUBY_VM_EVENT_FLAGS)
+#ifdef LIQUID_HAVE_GUARDED_COMPILER
     rb_define_singleton_method(mLiquidC, "native_try_parse_variable", native_try_variable, 3);
 #endif
     rb_define_singleton_method(mLiquidC, "native_install_case_parser", native_install_case_parser, 0);
