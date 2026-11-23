@@ -9,10 +9,9 @@ require_relative "../compatibility/process_runner"
 class AuditRegressionTest < Minitest::Test
   def test_discarded_case_prologue_releases_nested_bytecode
     source = "{% case x %}{% if y %}" + ("z" * 1_048_576) + "{% endif %}{% when 1 %}OK{% endcase %}"
-    template = Thread.new { Liquid::Template.parse(source, error_mode: :strict) }.value
+    template, document = Thread.new { parse_with_document_body(source, error_mode: :strict) }.value
     GC.start(full_mark: true, immediate_sweep: true)
-    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
-    assert_operator(sizes.max, :<, 4096)
+    assert_operator(ObjectSpace.memsize_of(document), :<, 4096)
     assert_equal("OK", template.render!("x" => 1))
     assert_equal(["OK"], template.root.nodelist.first.nodelist.first.nodelist)
   end
@@ -81,20 +80,19 @@ class AuditRegressionTest < Minitest::Test
   end
 
   def test_blank_body_compacts_raw_bytecode_and_preserves_ast
-    template = Liquid::Template.parse("{% if x %}" + (" " * 1_048_576) + "{% endif %}", error_mode: :strict)
+    source = "{% if x %}" + (" " * 1_048_576) + "{% endif %}"
+    template, document = parse_with_document_body(source, error_mode: :strict)
     GC.start(full_mark: true, immediate_sweep: true)
-    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
-    assert_operator(sizes.max, :<, 4096)
+    assert_operator(ObjectSpace.memsize_of(document), :<, 4096)
     assert_equal([], template.root.nodelist.first.blocks.first.attachment.nodelist)
     assert_equal("", template.render!("x" => true))
   end
 
   def test_nested_blank_conditions_keep_lookup_jumps_valid
     source = "{% if a.b %}" + (" " * 200_000) + "{% if c %}" + (" " * 200_000) + "{% endif %}{% endif %}"
-    template = Liquid::Template.parse(source, error_mode: :strict)
+    template, document = parse_with_document_body(source, error_mode: :strict)
     GC.start(full_mark: true, immediate_sweep: true)
-    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
-    assert_operator(sizes.max, :<, 4096)
+    assert_operator(ObjectSpace.memsize_of(document), :<, 4096)
     assert_equal("", template.render!("a" => { "b" => true }, "c" => true))
     assert_equal("", template.render!("a" => {}, "c" => true))
     nested = template.root.nodelist.first.blocks.first.attachment.nodelist
@@ -119,9 +117,8 @@ class AuditRegressionTest < Minitest::Test
   end
 
   def test_finished_document_reports_and_releases_spare_capacity
-    template = Liquid::Template.parse("x" * 600_000)
-    sizes = ObjectSpace.each_object(Liquid::C::DocumentBody).map { |body| ObjectSpace.memsize_of(body) }
-    assert(sizes.any? { |size| size >= 600_000 && size < 700_000 }, sizes.inspect)
+    template, document = parse_with_document_body("x" * 600_000)
+    assert_includes(600_000...700_000, ObjectSpace.memsize_of(document))
     assert_equal("x" * 600_000, template.render!)
   end
 
@@ -339,6 +336,19 @@ class AuditRegressionTest < Minitest::Test
   end
 
   private
+
+  def parse_with_document_body(source, **options)
+    context = Liquid::ParseContext.new(options)
+    document = nil
+    # TruffleRuby can enumerate the document while the parse context still references it.
+    context.define_singleton_method(:start_liquid_c_parsing) do
+      existing = ObjectSpace.each_object(Liquid::C::DocumentBody).to_a
+      super()
+      document = (ObjectSpace.each_object(Liquid::C::DocumentBody).to_a - existing).fetch(0)
+    end
+    template = Liquid::Template.parse(source, context)
+    [template, document]
+  end
 
   # Aggressive heap expansion must not affect a later GC.stress test in the
   # same MRI process (including on the unmodified extension).

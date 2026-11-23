@@ -21,7 +21,12 @@ run = "bundle exec rubocop"
 
 [tasks."lint:workflows"]
 description = "Check GitHub Actions and Dependabot; fail on every finding"
-run = "jactionlint --strict-exit"
+run = '''
+git ls-files -co --exclude-standard -z -- \
+  '.github/workflows/*.yml' '.github/workflows/*.yaml' '.github/workflows/actions.lock' \
+  '.github/dependabot.yml' '.github/dependabot.yaml' 'action.yml' 'action.yaml' '*/action.yml' '*/action.yaml' \
+  | xargs -0 -r jactionlint --strict-exit --
+'''
 
 [tasks."lint:hooks"]
 description = "Validate the hk configuration"
