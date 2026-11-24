@@ -23,6 +23,8 @@ Gem::Specification.new do |spec|
   spec.metadata["source_code_uri"] = "#{spec.homepage}/tree/v#{spec.version}"
 
   spec.add_dependency("liquid", "= 5.14.0")
+  # Liquid 5.14.0 requires base64 in its standard filters.
+  spec.add_dependency("base64", "~> 0.2")
   # strscan 3.1.8 can misread Liquid tokens during GC compaction on MRI.
   spec.add_dependency("strscan", "!= 3.1.8")
 end
