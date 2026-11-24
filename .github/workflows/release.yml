@@ -1,0 +1,60 @@
+name: Publish gem
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BUNDLE_WITHOUT: development
+      BUNDLE_FROZEN: 'true'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
+        with:
+          ruby-version: .ruby-version
+          bundler: Gemfile.lock
+      - name: Check release tag
+        run: ruby -Ilib -rliquid/c/version -e 'abort "Expected tag v#{Liquid::C::VERSION}" unless ENV.fetch("GITHUB_REF_NAME") == "v#{Liquid::C::VERSION}"'
+      - run: bundle install
+      - run: bundle exec rake test:unit test
+      - name: Build and test the gem
+        run: |
+          gem build liquid5-c.gemspec --strict --output liquid5-c.gem
+          bash script/check-package ./liquid5-c.gem
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: liquid5-c
+          path: liquid5-c.gem
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: ruby/setup-ruby@b3aaceaef7e0ee231b499e7b5f49c03fc1d32199 # v1
+        with:
+          ruby-version: '3.3'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: liquid5-c
+      - uses: rubygems/configure-rubygems-credentials@c6ca7f4bac0e29c9bde8eeae0a0a986b27efa05f # v2.2.0
+        with:
+          owner: ${{ vars.RUBYGEMS_OWNER_ID }}
+      - run: gem push --host https://rubygems.org ./liquid5-c.gem

@@ -48,9 +48,8 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
       - run: |
-          gem build liquid-c.gemspec --output liquid-c.gem
-          gem install --no-document ./liquid-c.gem
-          ruby -rliquid/c -e 't = Liquid::Template.parse("{{ x | upcase }}"); abort unless t.root.body.is_a?(Liquid::C::BlockBody) && t.render!("x" => "ok") == "OK"'
+          gem build liquid5-c.gemspec --output liquid5-c.gem
+          bash script/check-package ./liquid5-c.gem
 
   test:
     if: github.event_name != 'schedule'

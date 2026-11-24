@@ -10,7 +10,7 @@ GIT
 PATH
   remote: .
   specs:
-    liquid-c (4.2.0)
+    liquid5-c (5.0.0)
       liquid (= 5.14.0)
       strscan (!= 3.1.8)
 
@@ -88,7 +88,7 @@ DEPENDENCIES
   bundler (>= 1.5)
   byebug
   liquid!
-  liquid-c!
+  liquid5-c!
   lru_redux (~> 1.1)
   minitest (~> 5.22)
   nokogiri (~> 1.19.7)

@@ -6,11 +6,10 @@ $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 require "liquid/c/version"
 
 Gem::Specification.new do |spec|
-  spec.name          = "liquid-c"
+  spec.name          = "liquid5-c"
   spec.version       = Liquid::C::VERSION
-  spec.authors       = ["Justin Li", "Dylan Thacker-Smith"]
-  spec.email         = ["gems@shopify.com"]
-  spec.summary       = "Liquid performance extension in C"
+  spec.authors       = ["Justin Li", "Dylan Thacker-Smith", "Vladimir Ivanin"]
+  spec.summary       = "Native parser and rendering VM for Liquid 5.14.0"
   spec.homepage      = "https://github.com/VladimirIvanin/liquid-c"
   spec.license       = "MIT"
 
@@ -21,13 +20,9 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.0.0"
 
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
+  spec.metadata["source_code_uri"] = "#{spec.homepage}/tree/v#{spec.version}"
 
   spec.add_dependency("liquid", "= 5.14.0")
   # strscan 3.1.8 can misread Liquid tokens during GC compaction on MRI.
   spec.add_dependency("strscan", "!= 3.1.8")
-
-  spec.add_development_dependency("bundler", ">= 1.5") # has bugfix for segfaulting deploys
-  spec.add_development_dependency("minitest", "~> 5.22")
-  spec.add_development_dependency("rake")
-  spec.add_development_dependency("rake-compiler")
 end

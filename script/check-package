@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+package=$(realpath "$1")
+gem_dir=$(mktemp -d)
+trap 'rm -rf -- "$gem_dir"' EXIT
+export GEM_HOME="$gem_dir" GEM_PATH="$gem_dir"
+cd "$gem_dir"
+gem install --no-document "$package"
+ruby -rliquid/c -e '
+  spec = Gem.loaded_specs.fetch("liquid5-c")
+  abort "Unexpected extension version" unless spec.version.to_s == Liquid::C::VERSION
+  template = Liquid::Template.parse("{{ x | upcase }}")
+  abort "Expected a native block body" unless template.root.body.is_a?(Liquid::C::BlockBody)
+  abort "Unexpected render output" unless template.render!("x" => "ok") == "OK"
+'
