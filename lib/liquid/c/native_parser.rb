@@ -11,8 +11,13 @@ module Liquid
       native_source = if RUBY_ENGINE == "truffleruby"
         File.join(RbConfig::CONFIG.fetch("prefix"), "lib/truffle/truffle/cext_ruby.rb")
       end
-      scanner_source = if RUBY_ENGINE == "truffleruby"
-        File.join(Gem.loaded_specs.fetch("strscan").full_gem_path, "lib/strscan/truffleruby.rb")
+      scanner_sources = if RUBY_ENGINE == "truffleruby"
+        [
+          File.join(Gem.loaded_specs.fetch("strscan").full_gem_path, "lib/strscan/truffleruby.rb"),
+          File.join(RbConfig::CONFIG.fetch("rubylibdir"), "strscan/truffleruby.rb"),
+        ]
+      else
+        []
       end
       native_location = ->(location) { location.nil? || location == native_source }
       specifications = {
@@ -41,7 +46,7 @@ module Liquid
           method = owner.instance_method(name)
           location = method.source_location&.first
           standard = if owner == StringScanner
-            native_location.call(location) || location == scanner_source
+            native_location.call(location) || scanner_sources.include?(location)
           else
             location&.start_with?(source_root + "/")
           end
