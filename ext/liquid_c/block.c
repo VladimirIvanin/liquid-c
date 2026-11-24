@@ -740,6 +740,8 @@ static VALUE block_body_render_to_output_buffer(VALUE self, VALUE context, VALUE
     document_body_ensure_compile_finished(entry->body);
 
     liquid_vm_render(document_body_get_block_body_header_ptr(entry), document_body_get_constants_ptr(entry), context, output, &body->as.compiled.nodelist);
+    // The VM holds raw pointers into the memory owned by self for the whole render.
+    RB_GC_GUARD(self);
     return output;
 }
 

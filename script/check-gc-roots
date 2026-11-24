@@ -1,0 +1,66 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Static check for GC root bugs in the C extension.
+#
+# 1. Every file-level `VALUE` variable must be registered as a GC root
+#    (rb_global_variable / rb_gc_register_address). Ruby's compaction moves
+#    classes, so an unregistered global ends up pointing at a stale slot.
+# 2. rb_gc_register_address must not be given the address of a local or
+#    stack-allocated struct. If its fiber is abandoned the root dangles.
+#
+# Usage: script/check-gc-roots [directory]
+
+directory = ARGV.fetch(0, File.expand_path("../ext/liquid_c", __dir__))
+sources = Dir[File.join(directory, "*.c")].sort
+abort "no C sources in #{directory}" if sources.empty?
+
+# Variables holding an ID (declared VALUE for historical reasons) are not objects.
+NOT_OBJECTS = /\Aid_/
+# Heap or static tables whose slots are registered individually.
+REGISTERED_TABLES = ["method_guards", "compiler_methods", "identity_entries"].freeze
+
+text = sources.to_h { |path| [path, File.read(path)] }
+all_text = text.values.join("\n")
+
+globals = {}
+text.each do |path, source|
+  source.each_line.with_index(1) do |line, number|
+    next unless line =~ %r{\A(?:static\s+)?VALUE\s+([^(){}]*);\s*(?://.*)?\z}
+    next if line.start_with?("extern")
+
+    Regexp.last_match(1).split(",").each do |declarator|
+      name = declarator.strip.sub(/\s*=.*\z/, "").sub(/\[.*\]\z/, "")
+      next if name.empty? || name.match?(NOT_OBJECTS)
+
+      globals[name] = "#{File.basename(path)}:#{number}"
+    end
+  end
+end
+
+registration = /rb_(?:global_variable|gc_register_address)\s*\(\s*&\s*(\w+)/
+registered = all_text.scan(registration).flatten
+# Roots registered through a table: `VALUE *roots[] = { &a, &b }; ... rb_global_variable(roots[i])`.
+all_text.scan(/VALUE\s*\*\s*\w+\s*\[\]\s*=\s*\{([^}]*)\}/) do |(body)|
+  registered.concat(body.scan(/&\s*(\w+)/).flatten)
+end
+
+errors = []
+globals.each do |name, location|
+  next if registered.include?(name)
+
+  errors << "#{location}: global VALUE #{name} is not registered with rb_global_variable"
+end
+
+all_text.scan(/rb_gc_register_address\s*\(\s*&\s*(\w+)/) do |(root)|
+  next if globals.key?(root) || REGISTERED_TABLES.include?(root)
+
+  errors << "rb_gc_register_address(&#{root}) registers an address that is not a global"
+end
+
+if errors.empty?
+  puts "GC roots OK: #{globals.size} globals checked"
+else
+  warn errors
+  exit 1
+end

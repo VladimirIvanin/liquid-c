@@ -21,11 +21,7 @@ class NativeTagsTest < Minitest::Test
       left = native.root.nodelist.first.blocks.first
       right = ruby.root.nodelist.first.blocks.first
       assert_equal(condition_snapshot(right), condition_snapshot(left), expression)
-      if Liquid::C::NativeParser::NATIVE_GUARDS && expression.include?(".child")
-        assert_equal(1, stats[:accepted_condition], expression)
-      else
-        assert_nil(stats[:accepted_condition], expression)
-      end
+      assert_nil(stats[:accepted_condition], expression)
       [{}, { "x" => 1, "y" => [], "z" => true }, { "x" => "a", "obj" => { "a" => [2] }, "key" => "a" }].each do |values|
         assert_equal(ruby.render(values), native.render(values), expression)
       end
@@ -54,11 +50,7 @@ class NativeTagsTest < Minitest::Test
         fields.map { |name| expression_snapshot(left.instance_variable_get(name)) },
         header,
       )
-      if Liquid::C::NativeParser::NATIVE_GUARDS && header.include?(".child")
-        assert_equal(1, stats[:accepted_for], header)
-      else
-        assert_nil(stats[:accepted_for], header)
-      end
+      assert_nil(stats[:accepted_for], header)
       values = { "values" => [1, 2, 3], "count" => 2, "start" => 1, "key" => "a", "obj" => { "a" => [4, 5] } }
       assert_equal(ruby.render(values), native.render(values), header)
     end
@@ -120,11 +112,7 @@ class NativeTagsTest < Minitest::Test
       expression_snapshot(ruby.root.nodelist.first.left),
       expression_snapshot(native.root.nodelist.first.left),
     )
-    if Liquid::C::NativeParser::NATIVE_GUARDS
-      assert_equal(1, stats[:accepted_case])
-    else
-      assert_nil(stats[:accepted_case])
-    end
+    assert_nil(stats[:accepted_case])
     assert_same(native.root.nodelist.first.left, native.root.nodelist.last.left)
   end
 

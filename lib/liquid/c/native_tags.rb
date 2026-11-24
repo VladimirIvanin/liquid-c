@@ -60,7 +60,7 @@ module Liquid
           return if ENV["LIQUID_C_NATIVE_TAGS"] == "false" || context.instance_variable_get(:@error_mode) != :strict
           return unless Liquid::C.instance_variable_get(:@enabled)
           return if context.instance_variable_get(:@liquid_c_nodes_disabled)
-          return unless NativeParser::NATIVE_GUARDS || Liquid::C.native_frontend_candidate?(markup)
+          return unless Liquid::C.native_frontend_candidate?(markup)
           return unless compatible?(object, kind)
 
           result = NativeParser.tag_payload(markup, context, kind)
@@ -68,35 +68,6 @@ module Liquid
 
           result
         end
-      end
-
-      original_if = Liquid::If.instance_method(:strict_parse)
-      if NativeParser::NATIVE_GUARDS && original_if.owner == Liquid::If && original_if.original_name == :strict_parse &&
-          original_if.source_location&.first == File.join(root, "tags", "if.rb")
-        Liquid::C.native_install_header_parser(original_if, false)
-      end
-
-      original_for = Liquid::For.instance_method(:strict_parse)
-      if NativeParser::NATIVE_GUARDS && original_for.owner == Liquid::For &&
-          original_for.original_name == :strict_parse &&
-          original_for.source_location&.first == File.join(root, "tags", "for.rb")
-        Liquid::C.native_install_header_parser(original_for, true)
-      end
-
-      original_context = Liquid::ParserSwitching.instance_method(:strict_parse_with_error_context)
-      if NativeParser::NATIVE_GUARDS && original_context.owner == Liquid::ParserSwitching &&
-          original_context.original_name == :strict_parse_with_error_context &&
-          original_context.source_location&.first == File.join(root, "parser_switching.rb")
-        Liquid::C.native_install_strict_context
-      end
-
-      # Case's legacy fragment matcher deliberately remains responsible for
-      # choosing the fragment. Its permissive semantics differ from Parser.
-      original_case = Liquid::Case.instance_method(:parse_expression)
-      if NativeParser::NATIVE_GUARDS && original_case.owner == Liquid::Tag &&
-          original_case.original_name == :parse_expression &&
-          original_case.source_location&.first == File.join(root, "tag.rb")
-        Liquid::C.native_install_case_parser
       end
     end
   end

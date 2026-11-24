@@ -372,8 +372,6 @@ end
 
 require "liquid/c/native_parser"
 require "liquid/c/native_tags"
-require "liquid/c/native_values"
 
 # Parsing during require retains the original path until guards are ready.
 Liquid::C.native_enable_variable_frontend
-require "liquid/c/native_compiler"

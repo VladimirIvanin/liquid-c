@@ -11,7 +11,7 @@ RubyMemcheck.config(binary_name: "liquid_c")
 
 ENV["DEBUG"] ||= "true"
 
-task default: [:test, :rubocop]
+task default: [:gc_roots, :test, :rubocop]
 
 task test: ["test:compatibility"]
 

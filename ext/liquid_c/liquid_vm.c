@@ -39,9 +39,11 @@ static void vm_mark(void *ptr)
 
     c_buffer_rb_gc_mark(&vm->stack);
     context_mark(&vm->context);
-    for (vm_variable_frame_t *frame = vm->variable_frame; frame; frame = frame->previous) {
-        rb_gc_mark(frame->variable);
-    }
+    // Variable frames are stack allocated and are kept alive by the
+    // conservative stack scan of their fiber. Walking them here would follow
+    // dangling pointers if a fiber were abandoned mid-render.
+    rb_gc_mark(vm->variable_frame_fiber);
+    rb_gc_mark(vm->stack_fiber);
 }
 
 static void vm_free(void *ptr)
@@ -70,6 +72,10 @@ static VALUE vm_internal_new(VALUE context)
     vm->stack = c_buffer_init();
 
     vm->invoking_filter = false;
+    vm->variable_frame = NULL;
+    vm->variable_frame_fiber = Qnil;
+    vm->stack_fiber = Qnil;
+    vm->stack_depth = 0;
 
     vm->context_generation = context_generation;
     context_internal_init(context, &vm->context);
@@ -358,6 +364,7 @@ static VALUE vm_restore_variable_frame(VALUE uncast_args)
 {
     variable_render_args_t *args = (void *)uncast_args;
     args->vm->variable_frame = args->frame.previous;
+    args->vm->variable_frame_fiber = args->frame.previous_fiber;
     return Qnil;
 }
 
@@ -465,8 +472,11 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                 VALUE hash = rb_hash_new();
 
                 for (size_t i = 0; i < num_keys_and_values; i += 2) {
-                    VALUE *pair = vm_stack_peek_n(vm, num_keys_and_values - i);
-                    rb_hash_aset(hash, pair[0], pair[1]);
+                    // Copy the pair: hashing a key may run Ruby code that
+                    // re-enters the VM and reallocates the value stack.
+                    VALUE *slot = vm_stack_peek_n(vm, num_keys_and_values - i);
+                    VALUE key = slot[0], value = slot[1];
+                    rb_hash_aset(hash, key, value);
                 }
                 vm_stack_pop_n(vm, num_keys_and_values);
 
@@ -590,6 +600,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                     .vm = vm,
                     .frame = {
                         .previous = vm->variable_frame,
+                        .previous_fiber = vm->variable_frame_fiber,
                         .variable = node,
                         .instructions = ip,
                         .constants = constants,
@@ -599,6 +610,7 @@ static VALUE vm_render_until_error(VALUE uncast_args)
                     .output = output,
                 };
                 vm->variable_frame = &render_args.frame;
+                vm->variable_frame_fiber = rb_fiber_current();
                 rb_ensure(vm_call_variable_render, (VALUE)&render_args, vm_restore_variable_frame, (VALUE)&render_args);
                 ip = vm_skip_variable_instructions(ip);
                 args->ip = NULL;
@@ -639,11 +651,27 @@ typedef struct vm_execution_args {
     size_t old_stack_byte_size;
 } vm_execution_args_t;
 
+// Interleaving two fibers on one value stack would restore the stack to a size
+// that cuts into the other fiber's live values. Reject it with an exception
+// instead of corrupting memory. Call immediately before rb_ensure(vm_restore_stack).
+static void vm_stack_enter(vm_t *vm)
+{
+    VALUE fiber = rb_fiber_current();
+    if (vm->stack_depth == 0) {
+        vm->stack_fiber = fiber;
+    } else if (vm->stack_fiber != fiber) {
+        rb_raise(rb_eRuntimeError, "Liquid context is being rendered by another fiber or thread");
+    }
+    vm->stack_depth++;
+}
+
 static VALUE vm_restore_stack(VALUE uncast_args)
 {
     vm_execution_args_t *args = (void *)uncast_args;
     vm_render_until_error_args_t *render_args = args->render_args;
     vm_t *vm = render_args->vm;
+
+    if (--vm->stack_depth == 0) vm->stack_fiber = Qnil;
 
     vm->stack.data_end = vm->stack.data ? vm->stack.data + args->old_stack_byte_size : NULL;
 
@@ -675,6 +703,7 @@ VALUE liquid_vm_evaluate(VALUE context, vm_assembler_t *code)
         .render_args = &args,
         .old_stack_byte_size = c_buffer_size(&vm->stack),
     };
+    vm_stack_enter(vm);
     return rb_ensure(vm_evaluate_body, (VALUE)&execution_args, vm_restore_stack, (VALUE)&execution_args);
 }
 
@@ -808,6 +837,7 @@ void liquid_vm_render(block_body_header_t *body, const VALUE *const_ptr, VALUE c
         .old_stack_byte_size = c_buffer_size(&vm->stack),
     };
 
+    vm_stack_enter(vm);
     rb_ensure(vm_render_loop, (VALUE)&execution_args, vm_restore_stack, (VALUE)&execution_args);
 }
 
@@ -819,7 +849,7 @@ static VALUE variable_render(VALUE self, VALUE context)
     }
     vm_t *vm = vm_from_context(context);
     vm_variable_frame_t *frame = vm->variable_frame;
-    if (!frame || frame->variable != self || *frame->nodelist != Qundef) {
+    if (!frame || vm->variable_frame_fiber != rb_fiber_current() || frame->variable != self || *frame->nodelist != Qundef) {
         return rb_funcall(self, id_ruby_render, 1, context);
     }
 
@@ -834,6 +864,7 @@ static VALUE variable_render(VALUE self, VALUE context)
         .render_args = &render_args,
         .old_stack_byte_size = c_buffer_size(&vm->stack),
     };
+    vm_stack_enter(vm);
     VALUE result = rb_ensure(vm_evaluate_body, (VALUE)&execution_args, vm_restore_stack, (VALUE)&execution_args);
     vm_refresh_context(vm);
     if (!NIL_P(vm->context.global_filter)) {

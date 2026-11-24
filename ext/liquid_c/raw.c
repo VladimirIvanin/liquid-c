@@ -131,6 +131,7 @@ void liquid_define_raw(void)
     id_ivar_body = rb_intern("@body");
 
     cLiquidRaw = rb_const_get(mLiquid, rb_intern("Raw"));
+    rb_global_variable(&cLiquidRaw);
 
     rb_define_method(cLiquidRaw, "c_parse", raw_parse_method, 1);
 }

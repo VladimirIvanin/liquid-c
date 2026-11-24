@@ -106,47 +106,10 @@ module Liquid
           (mutable_table ? value == special_tokens : value.is_a?(Module) || value.frozen?)
         [owner, name, value, standard, mutable_table ? value.dup.freeze : nil].freeze
       end.freeze
-      GUARD_SPECS = GUARDS.map do |owner, name, *_|
-        receiver = if owner == Liquid::ParseContext
-          1
-        elsif owner == StringScanner
-          2
-        elsif owner == Liquid::Variable
-          3
-        else
-          0
-        end
-        [owner, name, receiver, false, nil, nil, ![:initialize, :lax_parse_filter_expressions].include?(name)].freeze
-      end.concat(CONSTRUCTORS.map { |klass, name, _| [klass.singleton_class, name, 0, false, nil, nil, true].freeze })
-        .concat(CONSTANT_GUARDS.map do |owner, name, value, _standard, snapshot|
-                  [owner, name, 0, true, snapshot, value, false].freeze
-                end).freeze
       STANDARD_GUARDS = GUARDS.all?(&:last) && CONSTANT_GUARDS.all? { |guard| guard[3] } &&
         CONSTRUCTORS.all? do |_klass, name, method|
           method.source_location.nil? && method.owner == Class && method.original_name == name
         end
-      # MRI 3.2's public counter counts registered IC sites. Warm and retain
-      # one actual Ruby constant reader per guarded name: changes then invalidate
-      # the epoch even when the native parser never executes the Ruby lexer.
-      # Method identities and mutable table slots are NOT cached.
-      CONSTANT_WATCHERS = if STANDARD_GUARDS && RUBY_ENGINE == "ruby" && RUBY_VERSION.start_with?("3.2.") &&
-          Liquid::C.respond_to?(:native_constant_watchers_supported?) &&
-          Liquid::C.native_constant_watchers_supported?(RubyVM)
-        unchanged = true
-        evaluator = Module.instance_method(:module_eval)
-        readers = CONSTANT_GUARDS.map do |owner, name, expected, *_|
-          reader = evaluator.bind_call(owner, "-> { #{name} }", __FILE__, __LINE__)
-          unchanged &&= reader.call.equal?(expected)
-          reader.freeze
-        end
-        unchanged ? readers.freeze : nil
-      end
-      NATIVE_GUARDS = if Liquid::C.respond_to?(:native_try_parse_variable) && STANDARD_GUARDS && CONSTANT_WATCHERS
-        watchers = ENV["LIQUID_C_NATIVE_CONST_CACHE"] == "false" ? nil : CONSTANT_WATCHERS
-        Liquid::C.native_parser_register_guards(GUARD_SPECS, watchers, RubyVM)
-      else
-        false
-      end
 
       class << self
         def parse(markup, context, variable = nil)
@@ -154,16 +117,9 @@ module Liquid
           return record(context, :disabled) if ENV["LIQUID_C_NATIVE_PARSER"] == "false"
           return record(context, :disabled) unless Liquid::C.instance_variable_get(:@enabled)
 
-          if NATIVE_GUARDS && variable
-            result = Liquid::C.native_try_parse_variable(markup, context, variable)
-            if result.equal?(false) && compatible?(context, variable)
-              result = Liquid::C.native_try_parse_variable(markup, context, variable)
-            end
-            return result || nil
-          end
           return record(context, :disabled) if context.instance_variable_get(:@liquid_c_nodes_disabled)
           return record(context, :hooks) if variable && !variable.instance_of?(Liquid::Variable)
-          return record(context, :guard_cost) unless NATIVE_GUARDS || Liquid::C.native_frontend_candidate?(markup)
+          return record(context, :guard_cost) unless Liquid::C.native_frontend_candidate?(markup)
           return record(context, :hooks) unless compatible?(context, variable)
           return record(context, :disabled) if context.liquid_c_nodes_disabled?
           return record(context, :mode) unless [:lax, :warn, :strict].include?(context.error_mode)
@@ -186,7 +142,7 @@ module Liquid
 
         def tag_payload(markup, context, kind)
           return if ENV["LIQUID_C_NATIVE_TAGS"] == "false"
-          return unless NATIVE_GUARDS || Liquid::C.native_frontend_candidate?(markup)
+          return unless Liquid::C.native_frontend_candidate?(markup)
           return unless compatible?(context)
           return if context.liquid_c_nodes_disabled?
           return unless context.error_mode == :strict && compatible?(context)
@@ -213,7 +169,6 @@ module Liquid
         def compatible?(context, variable = nil)
           return false unless context.instance_of?(Liquid::ParseContext)
           return false unless STANDARD_GUARDS
-          return true if NATIVE_GUARDS && Liquid::C.native_parser_methods_compatible?(context, variable)
           return false unless CONSTANT_GUARDS.all? do |owner, name, value, standard, snapshot|
             standard && Liquid::C.native_constant_matches?(owner, name, value, snapshot)
           end
@@ -245,11 +200,7 @@ module Liquid
               Liquid::C.native_public_method?(target, name)) && target.method(name).unbind == method
           end
 
-          return true unless NATIVE_GUARDS
-
-          watchers = ENV["LIQUID_C_NATIVE_CONST_CACHE"] == "false" ? nil : CONSTANT_WATCHERS
-          Liquid::C.native_parser_register_guards(GUARD_SPECS, watchers, RubyVM)
-          Liquid::C.native_parser_methods_compatible?(context, variable)
+          true
         end
 
         def record(context, reason)

@@ -17,6 +17,8 @@ if ENV["DEBUG"] == "true"
   # Ruby was compiled with -DRUBY_DEBUG.
   # https://github.com/ruby/ruby/blob/9e678cdbd054f78576a8f21b3f97cccc395ade22/include/ruby/assert.h#L36-L41
   $CFLAGS << (RUBY_ENGINE == "ruby" ? " -DRUBY_DEBUG" : " -DNDEBUG")
+elsif ENV["LIQUID_C_CHECKED"] == "true"
+  # Optimized build that keeps assert() for CI and sanitizer runs.
 else
   $CFLAGS << " -DNDEBUG"
 end
@@ -45,16 +47,7 @@ rescue LoadError, Fiddle::DLError
   false
 end
 
-["rb_callable_method_entry", "rb_hash_compare_by_id_p"].each do |function|
-  have_func(function) if mri_exports?(function)
-end
-if mri_exports?("ruby_vm_event_flags") && try_link(<<~C)
-  #define HAVE_RUBY_VM_EVENT_FLAGS 1
-  #include "mri_compat.h"
-  int main(void) { return liquid_vm_tracing(); }
-C
-  $defs << "-DHAVE_RUBY_VM_EVENT_FLAGS"
-end
+have_func("rb_hash_compare_by_id_p") if mri_exports?("rb_hash_compare_by_id_p")
 
 $warnflags&.gsub!("-Wdeclaration-after-statement", "")
 create_makefile("liquid_c")

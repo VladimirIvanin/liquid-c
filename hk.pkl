@@ -12,6 +12,9 @@ hooks {
       ["rubocop"] {
         check = "mise run lint:ruby"
       }
+      ["gc-roots"] {
+        check = "mise run lint:gc-roots"
+      }
       ["workflows"] {
         check = "mise run lint:workflows"
       }

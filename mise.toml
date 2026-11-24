@@ -19,6 +19,10 @@ run = ["bundle install", "hk install --mise"]
 description = "Check Ruby with the existing RuboCop rules"
 run = "bundle exec rubocop"
 
+[tasks."lint:gc-roots"]
+description = "Check GC roots of the C extension"
+run = "ruby script/check-gc-roots"
+
 [tasks."lint:workflows"]
 description = "Check GitHub Actions and Dependabot; fail on every finding"
 run = '''
@@ -34,7 +38,7 @@ run = "hk validate"
 
 [tasks.lint]
 description = "Check Ruby, GitHub Actions and Git hook configuration"
-depends = ["lint:ruby", "lint:workflows", "lint:hooks"]
+depends = ["lint:ruby", "lint:gc-roots", "lint:workflows", "lint:hooks"]
 
 [tasks.format]
 description = "Apply safe RuboCop corrections with the existing rules"
@@ -58,7 +62,6 @@ git ls-files -co --exclude-standard -z | rsync -a --from0 --files-from=- --ignor
 cd "$suite_dir"
 bundle check || bundle install
 bundle exec rake compile
-bundle exec ruby -Ilib -rliquid/c -e 'abort "Guarded native parser unavailable on #{RUBY_DESCRIPTION}" unless Liquid::C::NativeParser::NATIVE_GUARDS'
 bundle exec rake test
 cd ..
 rm -rf -- "$suite_dir"

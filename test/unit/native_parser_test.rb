@@ -42,11 +42,7 @@ class NativeParserTest < Minitest::Test
         ruby = Liquid::Variable.new(source, ruby_context)
         assert_equal([snapshot(ruby.name)], [snapshot(native.name)], "#{mode}: #{source}")
         assert_equal(snapshot(ruby.filters), snapshot(native.filters), "#{mode}: #{source}")
-        if Liquid::C::NativeParser::NATIVE_GUARDS
-          assert_equal(1, stats[:accepted], "#{mode}: #{source}")
-        else
-          assert_nil(stats[:accepted], "#{mode}: #{source}")
-        end
+        assert_nil(stats[:accepted], "#{mode}: #{source}")
       end
     end
   end

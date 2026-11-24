@@ -8,6 +8,7 @@
 
 typedef struct vm_variable_frame {
     struct vm_variable_frame *previous;
+    VALUE previous_fiber;
     VALUE variable;
     const uint8_t *instructions;
     const VALUE *constants;
@@ -20,7 +21,15 @@ typedef struct vm {
     bool invoking_filter;
     unsigned long context_generation;
     unsigned long context_revision;
+    // Frames live on the machine stack of the fiber that created them. The
+    // owning fiber is recorded so a frame left behind by an abandoned fiber is
+    // never dereferenced from another fiber.
     vm_variable_frame_t *variable_frame;
+    VALUE variable_frame_fiber;
+    // The value stack is shared by every render of a context. Only the fiber
+    // that entered it first may use it until it has fully unwound.
+    VALUE stack_fiber;
+    unsigned long stack_depth;
     context_t context;
 } vm_t;
 

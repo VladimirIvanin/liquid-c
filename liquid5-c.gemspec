@@ -17,7 +17,7 @@ Gem::Specification.new do |spec|
   spec.files         = Dir.chdir(__dir__) { Dir["lib/**/*.rb", "ext/liquid_c/*.{c,h,rb}", "README.md", "LICENSE.txt"] }
   spec.require_paths = ["lib"]
 
-  spec.required_ruby_version = ">= 3.0.0"
+  spec.required_ruby_version = ">= 3.2.0"
 
   spec.metadata["allowed_push_host"] = "https://rubygems.org"
   spec.metadata["source_code_uri"] = "#{spec.homepage}/tree/v#{spec.version}"

@@ -17,11 +17,7 @@ typedef struct context {
 
 void liquid_define_context(void);
 void liquid_define_native_values(void);
-#ifdef HAVE_RB_CALLABLE_METHOD_ENTRY
-VALUE liquid_value_to_liquid(VALUE value);
-#else
 #define liquid_value_to_liquid(value) rb_funcall((value), id_to_liquid, 0)
-#endif
 void context_internal_init(VALUE context_obj, context_t *context);
 void context_refresh(context_t *context);
 void context_mark(context_t *context);

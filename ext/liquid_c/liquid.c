@@ -14,6 +14,9 @@
 #include "vm_assembler_pool.h"
 #include "liquid_vm.h"
 #include "usage.h"
+#include <ruby/version.h>
+#include <string.h>
+#include <stdio.h>
 
 ID id_evaluate;
 ID id_to_liquid;
@@ -113,8 +116,25 @@ __attribute__((noreturn)) void raise_non_utf8_encoding_error(VALUE string, const
     rb_raise(rb_eEncCompatError, "non-UTF8 encoded %s (%"PRIsVALUE") not supported", value_name, rb_obj_encoding(string));
 }
 
+// The extension relies on the object layout of the Ruby it was compiled for.
+// Loading a binary built for another Ruby (for example a stale lib/liquid_c.so
+// after switching Ruby versions) would corrupt memory instead of failing.
+static void check_abi(void)
+{
+    const char *platform = RSTRING_PTR(rb_const_get(rb_cObject, rb_intern("RUBY_PLATFORM")));
+    const char *version = RSTRING_PTR(rb_const_get(rb_cObject, rb_intern("RUBY_VERSION")));
+    int major = 0, minor = 0;
+    sscanf(version, "%d.%d", &major, &minor);
+    if (major != RUBY_API_VERSION_MAJOR || minor != RUBY_API_VERSION_MINOR || strcmp(platform, RUBY_PLATFORM) != 0) {
+        rb_raise(rb_eLoadError,
+            "liquid_c was built for Ruby %d.%d (%s) but is loaded by Ruby %s (%s); recompile the extension",
+            RUBY_API_VERSION_MAJOR, RUBY_API_VERSION_MINOR, RUBY_PLATFORM, version, platform);
+    }
+}
+
 RUBY_FUNC_EXPORTED void Init_liquid_c(void)
 {
+    check_abi();
 #ifndef HAVE_RB_GC_COUNT
     rb_global_variable(&portable_gc_count);
     portable_gc_count = liquid_method_handle(rb_obj_method(rb_mGC, ID2SYM(rb_intern("count"))));

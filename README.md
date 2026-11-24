@@ -1,11 +1,11 @@
 # liquid5-c
 
 This fork of Shopify's liquid-c accelerates parsing and rendering with the Liquid 5.14.0 Ruby API.
-The native compiler depends on the internal layout of this Liquid release.
+The extension depends on the internal layout of this Liquid release.
 
 ## Installation
 
-The gem builds a native extension and requires Ruby 3.0 or later, Ruby headers,
+The gem builds a native extension and requires Ruby 3.2 or later, Ruby headers,
 a C compiler and make. Add [liquid5-c](https://rubygems.org/gems/liquid5-c)
 to your Gemfile. Bundler installs Liquid 5.14.0 as a dependency.
 
@@ -36,13 +36,12 @@ receive a tokenizer with a `shift` method. Profiling and the
 Set `Liquid::C.enabled` at application boot when choosing an engine for the
 whole process.
 
-The guarded native compiler for built-in tags requires MRI 3.2 and compatible
-Liquid methods. A registered subclass of `Liquid::Include` keeps its own parse
-and render behavior. Other Ruby versions can still use the C tokenizer, block
-body and rendering VM. To inspect variable parser decisions for a template,
+The extension uses only the public C API of MRI: no private symbols are linked,
+so it does not depend on the MRI patch version. All registered objects are GC
+roots that survive heap compaction (`GC.compact`, `Process.warmup`). A registered
+subclass of `Liquid::Include` keeps its own parse and render behavior. To inspect variable parser decisions for a template,
 pass a hash as the `native_parser_stats:` parse option. The parser populates
-it with counts such as `accepted` and `guard_cost`. Applications that require
-the guarded parser can check `Liquid::C::NativeParser::NATIVE_GUARDS` at boot.
+it with counts such as `accepted` and `guard_cost`.
 
 Whitespace trimming follows Liquid 5.14.0 by default. Templates that depend on
 historical liquid-c whitespace trimming can opt in during parsing with
@@ -70,7 +69,7 @@ The runner checks each fixture's output.
 
 On MRI 3.3.13 (x86-64 Linux, YJIT off), the two render fixtures gave the
 following allocation counts, rounded to the nearest object per render. This Ruby
-uses the C rendering VM with the MRI 3.2 guarded compiler disabled.
+uses the C tokenizer, block body and rendering VM.
 
 | Fixture | Plain Liquid | Liquid C |
 | --- | ---: | ---: |
@@ -95,7 +94,7 @@ mise run check
 
 Run `mise run test:insales` to check the current working tree on MRI 3.2.11,
 the InSales production version. The task uses rsync to create an isolated build
-under `tmp/`, verifies guarded native parsing is available, and runs the unit
+under `tmp/`, and runs the unit
 tests and compatibility matrix. A failed run keeps its build and logs for
 inspection. The default `mise run test` uses MRI 3.3.13.
 

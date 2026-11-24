@@ -76,19 +76,17 @@ static VALUE expression_parse_pinned(VALUE opaque)
     return expr_obj;
 }
 
-static VALUE expression_unpin(VALUE opaque)
-{
-    rb_gc_unregister_address((VALUE *)opaque);
-    return Qnil;
-}
-
 static VALUE expression_strict_parse(VALUE klass, VALUE markup)
 {
     if (NIL_P(markup)) return Qnil;
     StringValue(markup);
     markup = rb_str_dup_frozen(markup);
-    rb_gc_register_address(&markup);
-    return rb_ensure(expression_parse_pinned, (VALUE)&markup, expression_unpin, (VALUE)&markup);
+    // The local is found by the conservative stack scan, which also pins the
+    // string. Registering a stack address as a global root would leave a
+    // dangling root if this fiber were abandoned before unwinding.
+    VALUE result = expression_parse_pinned((VALUE)&markup);
+    RB_GC_GUARD(markup);
+    return result;
 }
 
 VALUE expression_evaluate(VALUE self, VALUE context)
@@ -123,6 +121,7 @@ static VALUE expression_disassemble(VALUE self)
 void liquid_define_expression(void)
 {
     cLiquidCExpression = rb_define_class_under(mLiquidC, "Expression", rb_cObject);
+    rb_global_variable(&cLiquidCExpression);
     rb_undef_alloc_func(cLiquidCExpression);
     rb_define_singleton_method(cLiquidCExpression, "strict_parse", expression_strict_parse, 1);
     rb_define_method(cLiquidCExpression, "evaluate", expression_evaluate, 1);

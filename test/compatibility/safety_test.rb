@@ -310,28 +310,6 @@ class Liquid514SafetyTest < Minitest::Test
     end
   end
 
-  def test_native_render_avoids_ruby_hook_checks_per_block
-    return unless Compatibility::ENGINE == "c"
-
-    skip("direct compiler is unavailable") unless Liquid::C::NativeParser::NATIVE_GUARDS
-
-    template = Liquid::Template.parse("{% for i in (1..1000) %}{% if i %}{{ i }}{% endif %}{% endfor %}")
-    assert_instance_of(Liquid::C::BlockBody, template.root.body)
-    assert_nil(Liquid::Context.instance_method(:evaluate).source_location)
-
-    gc_disabled = GC.disable
-    begin
-      methods_before = ObjectSpace.each_object(UnboundMethod).count
-      variables_before = ObjectSpace.each_object(Liquid::Variable).count
-      output = template.render!
-      assert_equal((1..1000).to_a.join, output)
-      assert_equal(methods_before, ObjectSpace.each_object(UnboundMethod).count)
-      assert_equal(variables_before, ObjectSpace.each_object(Liquid::Variable).count)
-    ensure
-      GC.enable unless gc_disabled
-    end
-  end
-
   def test_switching_engine_with_frozen_variable_class
     code = <<~RUBY
       require_relative "test/compatibility/boot"
