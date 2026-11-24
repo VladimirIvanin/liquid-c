@@ -6,8 +6,8 @@ The native compiler depends on the internal layout of this Liquid release.
 ## Installation
 
 The gem builds a native extension and requires Ruby 3.0 or later, Ruby headers,
-a C compiler and make. After the first release, add this line to your Gemfile.
-Bundler installs Liquid 5.14.0 as a dependency.
+a C compiler and make. Add [liquid5-c](https://rubygems.org/gems/liquid5-c)
+to your Gemfile. Bundler installs Liquid 5.14.0 as a dependency.
 
 ```ruby
 gem "liquid5-c", "~> 5.0", require: "liquid/c"
@@ -26,38 +26,6 @@ require "liquid/c"
 template = Liquid::Template.parse("Hello, {{ customer.name }}")
 template.render!("customer" => { "name" => "Ada" }) # => "Hello, Ada"
 ```
-
-## Publishing
-
-Before the first release, sign in to RubyGems.org with the account that will
-own the gem and create a [pending trusted publisher](https://rubygems.org/profile/oidc/pending_trusted_publishers).
-Enter the following values.
-
-| Field | Value |
-| --- | --- |
-| Gem name | `liquid5-c` |
-| GitHub owner | `VladimirIvanin` |
-| Repository | `liquid-c` |
-| Workflow filename | `release.yml` |
-| Environment | `release` |
-
-Copy the numeric account ID shown on that page into the GitHub Actions
-repository variable `RUBYGEMS_OWNER_ID` under Settings → Secrets and variables
-→ Actions → Variables. The workflow uses OIDC for authentication.
-
-For each release, update `Liquid::C::VERSION` in `lib/liquid/c/version.rb`,
-run `bundle lock` and merge the changes into `main`. Once CI passes, tag
-the tested commit and push that tag. For the first release, run the following
-from the release commit.
-
-```sh
-git tag -a v5.0.0 -m "Release liquid5-c 5.0.0"
-git push origin v5.0.0
-```
-
-The Publish gem workflow checks the tag against the version, runs the unit
-and compatibility suites, then builds and installs the gem in isolation.
-After a successful native render it pushes that same package to RubyGems.org.
 
 ## Compatibility
 
