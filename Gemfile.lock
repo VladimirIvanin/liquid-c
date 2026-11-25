@@ -10,7 +10,7 @@ GIT
 PATH
   remote: .
   specs:
-    liquid5-c (5.1.0)
+    liquid5-c (5.1.1)
       base64 (~> 0.2)
       liquid (= 5.14.0)
       strscan (!= 3.1.8)
