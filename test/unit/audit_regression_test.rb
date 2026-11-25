@@ -308,6 +308,51 @@ class AuditRegressionTest < Minitest::Test
     Liquid::Raw.define_method(:blank?, original) if original
   end
 
+  def test_raw_delimiter_survives_compaction_between_tokens
+    skip("GC compaction is unavailable") unless GC.respond_to?(:verify_compaction_references)
+    return isolate(__method__) unless ENV["LIQUID_AUDIT_CASE"] == __method__.to_s
+
+    before = GC.stat(:total_moved_objects)
+    original = Integer.instance_method(:+)
+    compacting = false
+    Integer.define_method(:+) do |other|
+      unless compacting
+        compacting = true
+        begin
+          GC.verify_compaction_references(expand_heap: true, toward: :empty)
+        ensure
+          compacting = false
+        end
+      end
+      original.bind_call(self, other)
+    end
+
+    assert_equal("\nline\n", Liquid::Template.parse("{% raw %}\nline\n{% endraw %}", line_numbers: true).render!)
+
+    fresh = Class.new(Liquid::Raw) do
+      def block_delimiter
+        +"endraw"
+      end
+    end
+    environment = Liquid::Environment.build { |env| env.register_tag("freshraw", fresh) }
+    parsed = Liquid::Template.parse("{% freshraw %}\nline\n{% endraw %}", environment: environment, line_numbers: true)
+    assert_equal("\nline\n", parsed.render!)
+
+    [40, 80, 200].each do |length|
+      delimiter = "d" * length
+      tag = Class.new(Liquid::Raw) do
+        define_method(:block_delimiter) { delimiter.dup }
+      end
+      environment = Liquid::Environment.build { |env| env.register_tag("raw#{length}", tag) }
+      source = "{% raw#{length} %}\nline\n{% #{delimiter} %}"
+      parsed = Liquid::Template.parse(source, environment: environment, line_numbers: true)
+      assert_equal("\nline\n", parsed.render!)
+    end
+    assert_operator(GC.stat(:total_moved_objects), :>, before)
+  ensure
+    Integer.define_method(:+, original) if original
+  end
+
   def test_expression_source_is_pinned_across_conversion_callbacks
     skip("GC compaction is unavailable") unless GC.respond_to?(:verify_compaction_references)
     return isolate(__method__) unless ENV["LIQUID_AUDIT_CASE"] == __method__.to_s

@@ -75,11 +75,11 @@ static VALUE native_capture_constant(VALUE owner, const char *name)
     return rb_const_get_at(owner, id);
 }
 
-typedef struct { VALUE owner; ID method; bool public_call; } primitive_guard_t;
+typedef struct { const VALUE *owner; ID method; bool public_call; } primitive_guard_t;
 static primitive_guard_t primitive_guards[96];
 static size_t primitive_guard_count;
 
-static void native_guard_primitive(VALUE owner, const char *method)
+static void native_guard_primitive(const VALUE *owner, const char *method)
 {
     if (primitive_guard_count >= sizeof(primitive_guards) / sizeof(primitive_guards[0]))
         rb_raise(rb_eRuntimeError, "too many native primitive guards");
@@ -93,8 +93,9 @@ static bool native_primitives_standard(bool check_visibility)
 {
     for (size_t i = 0; i < primitive_guard_count; i++) {
         const primitive_guard_t *guard = &primitive_guards[i];
-        if (!liquid_method_basic_definition_p(guard->owner, guard->method)) return false;
-        if (check_visibility && guard->public_call && rb_method_boundp(guard->owner, guard->method, 3) != 1) return false;
+        VALUE owner = *guard->owner;
+        if (!liquid_method_basic_definition_p(owner, guard->method)) return false;
+        if (check_visibility && guard->public_call && rb_method_boundp(owner, guard->method, 3) != 1) return false;
     }
     return true;
 }
@@ -1186,34 +1187,34 @@ void liquid_define_native_parser(void)
         RB_GC_GUARD(unbound);
     }
     const char *strings[] = { "strip", "start_with?", "end_with?", "scan", "match", "to_f", "[]", "freeze", "=~", "<<", "==", "byteslice", "length", "dup", "initialize_copy", "initialize_dup", "hash", "eql?" };
-    for (size_t i = 0; i < sizeof(strings) / sizeof(strings[0]); i++) native_guard_primitive(rb_cString, strings[i]);
+    for (size_t i = 0; i < sizeof(strings) / sizeof(strings[0]); i++) native_guard_primitive(&rb_cString, strings[i]);
     const char *arrays[] = { "all?", "each_with_index", "push", "reverse_each", "shift", "each_index", "[]", "[]=", "<<", "include?", "each", "size", "==" };
-    for (size_t i = 0; i < sizeof(arrays) / sizeof(arrays[0]); i++) native_guard_primitive(rb_cArray, arrays[i]);
-    native_guard_primitive(cLiquidVariableLookup, "freeze");
-    native_guard_primitive(cLiquidRangeLookup, "freeze");
-    native_guard_primitive(rb_cRange, "freeze");
-    native_guard_primitive(rb_cHash, "[]");
-    native_guard_primitive(rb_cHash, "[]=");
-    native_guard_primitive(rb_cHash, "key?");
-    native_guard_primitive(rb_cHash, "each");
-    native_guard_primitive(rb_cHash, "size");
-    native_guard_primitive(rb_cInteger, "<<");
-    native_guard_primitive(rb_cInteger, "|");
-    native_guard_primitive(rb_cInteger, "&");
-    native_guard_primitive(rb_cInteger, "<=>");
-    native_guard_primitive(rb_cInteger, "freeze");
-    native_guard_primitive(rb_cFloat, "freeze");
-    native_guard_primitive(rb_cNilClass, "==");
-    native_guard_primitive(rb_cRegexp, "===");
-    native_guard_primitive(rb_cRegexp, "match?");
-    native_guard_primitive(native_condition_class, "send");
-    native_guard_primitive(rb_cMatch, "[]");
-    native_guard_primitive(rb_cObject, "is_a?");
-    native_guard_primitive(rb_cObject, "freeze");
+    for (size_t i = 0; i < sizeof(arrays) / sizeof(arrays[0]); i++) native_guard_primitive(&rb_cArray, arrays[i]);
+    native_guard_primitive(&cLiquidVariableLookup, "freeze");
+    native_guard_primitive(&cLiquidRangeLookup, "freeze");
+    native_guard_primitive(&rb_cRange, "freeze");
+    native_guard_primitive(&rb_cHash, "[]");
+    native_guard_primitive(&rb_cHash, "[]=");
+    native_guard_primitive(&rb_cHash, "key?");
+    native_guard_primitive(&rb_cHash, "each");
+    native_guard_primitive(&rb_cHash, "size");
+    native_guard_primitive(&rb_cInteger, "<<");
+    native_guard_primitive(&rb_cInteger, "|");
+    native_guard_primitive(&rb_cInteger, "&");
+    native_guard_primitive(&rb_cInteger, "<=>");
+    native_guard_primitive(&rb_cInteger, "freeze");
+    native_guard_primitive(&rb_cFloat, "freeze");
+    native_guard_primitive(&rb_cNilClass, "==");
+    native_guard_primitive(&rb_cRegexp, "===");
+    native_guard_primitive(&rb_cRegexp, "match?");
+    native_guard_primitive(&native_condition_class, "send");
+    native_guard_primitive(&rb_cMatch, "[]");
+    native_guard_primitive(&rb_cObject, "is_a?");
+    native_guard_primitive(&rb_cObject, "freeze");
     const char *integers[] = { "+", "-", "==", "!=", "<", ">", ">=" };
-    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); i++) native_guard_primitive(rb_cInteger, integers[i]);
+    for (size_t i = 0; i < sizeof(integers) / sizeof(integers[0]); i++) native_guard_primitive(&rb_cInteger, integers[i]);
     const char *symbols[] = { "==", "!=", "===" };
-    for (size_t i = 0; i < sizeof(symbols) / sizeof(symbols[0]); i++) native_guard_primitive(rb_cSymbol, symbols[i]);
+    for (size_t i = 0; i < sizeof(symbols) / sizeof(symbols[0]); i++) native_guard_primitive(&rb_cSymbol, symbols[i]);
     id_string_scanner = rb_intern("@string_scanner");
     id_new_native = rb_intern("new");
     id_allocate_native = rb_intern("allocate");

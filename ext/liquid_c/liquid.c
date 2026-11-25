@@ -121,8 +121,14 @@ __attribute__((noreturn)) void raise_non_utf8_encoding_error(VALUE string, const
 // after switching Ruby versions) would corrupt memory instead of failing.
 static void check_abi(void)
 {
-    const char *platform = RSTRING_PTR(rb_const_get(rb_cObject, rb_intern("RUBY_PLATFORM")));
-    const char *version = RSTRING_PTR(rb_const_get(rb_cObject, rb_intern("RUBY_VERSION")));
+    char platform[256];
+    char version[32];
+    VALUE platform_string = rb_const_get(rb_cObject, rb_intern("RUBY_PLATFORM"));
+    Check_Type(platform_string, T_STRING);
+    snprintf(platform, sizeof(platform), "%.*s", (int)RSTRING_LEN(platform_string), RSTRING_PTR(platform_string));
+    VALUE version_string = rb_const_get(rb_cObject, rb_intern("RUBY_VERSION"));
+    Check_Type(version_string, T_STRING);
+    snprintf(version, sizeof(version), "%.*s", (int)RSTRING_LEN(version_string), RSTRING_PTR(version_string));
     int major = 0, minor = 0;
     sscanf(version, "%d.%d", &major, &minor);
     if (major != RUBY_API_VERSION_MAJOR || minor != RUBY_API_VERSION_MINOR || strcmp(platform, RUBY_PLATFORM) != 0) {

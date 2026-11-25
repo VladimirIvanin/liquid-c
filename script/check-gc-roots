@@ -8,17 +8,94 @@
 #    classes, so an unregistered global ends up pointing at a stale slot.
 # 2. rb_gc_register_address must not be given the address of a local or
 #    stack-allocated struct. If its fiber is abandoned the root dangles.
+# 3. A file-level static struct that stores VALUE fields must be a known root
+#    table. A copied VALUE inside it goes stale when compaction moves the object.
 #
 # Usage: script/check-gc-roots [directory]
 
 directory = ARGV.fetch(0, File.expand_path("../ext/liquid_c", __dir__))
-sources = Dir[File.join(directory, "*.c")].sort
+sources = Dir[File.join(directory, "*.{c,h}")].sort
 abort "no C sources in #{directory}" if sources.empty?
 
 # Variables holding an ID (declared VALUE for historical reasons) are not objects.
 NOT_OBJECTS = /\Aid_/
 # Heap or static tables whose slots are registered individually.
 REGISTERED_TABLES = ["method_guards", "compiler_methods", "identity_entries"].freeze
+
+def strip_c_comments(source)
+  stripped = +""
+  index = 0
+  while index < source.length
+    if source[index, 2] == "/*"
+      close = source.index("*/", index + 2)
+      break unless close
+
+      stripped << (" " * (close + 2 - index))
+      index = close + 2
+    elsif source[index, 2] == "//"
+      newline = source.index("\n", index)
+      break unless newline
+
+      stripped << "\n"
+      index = newline + 1
+    else
+      stripped << source[index]
+      index += 1
+    end
+  end
+  stripped
+end
+
+def matching_brace(text, open_index)
+  depth = 0
+  text.each_char.with_index do |char, index|
+    next if index < open_index
+
+    depth += 1 if char == "{"
+    next unless char == "}"
+
+    depth -= 1
+    return index if depth == 0
+  end
+  nil
+end
+
+# A VALUE field stores an object. A pointer (VALUE * or VALUE (*fn)()) does not.
+def value_object_fields?(body)
+  body.scan(/\bVALUE\b([^;{}]*)/).any? do |declarators,|
+    declarators.split(",").any? do |declarator|
+      stripped = declarator.strip
+      !stripped.empty? && !stripped.include?("*")
+    end
+  end
+end
+
+def add_struct_type(names, cleaned, match, close, body)
+  return unless value_object_fields?(body)
+
+  names << match[1] if match[1]
+  return unless match[0].include?("typedef")
+
+  typedef_name = cleaned[(close + 1)..][/\A\s*(\w+)/, 1]
+  names << typedef_name if typedef_name
+end
+
+def value_struct_types(source)
+  names = []
+  cleaned = strip_c_comments(source)
+  index = 0
+  while (match = cleaned.match(/(?:typedef\s+)?struct(?:\s+(\w+))?\s*\{/, index))
+    open = match.end(0) - 1
+    close = matching_brace(cleaned, open)
+    return names unless close
+
+    body = cleaned[(open + 1)...close]
+    add_struct_type(names, cleaned, match, close, body)
+    names.concat(value_struct_types(body))
+    index = close + 1
+  end
+  names
+end
 
 text = sources.to_h { |path| [path, File.read(path)] }
 all_text = text.values.join("\n")
@@ -56,6 +133,29 @@ all_text.scan(/rb_gc_register_address\s*\(\s*&\s*(\w+)/) do |(root)|
   next if globals.key?(root) || REGISTERED_TABLES.include?(root)
 
   errors << "rb_gc_register_address(&#{root}) registers an address that is not a global"
+end
+
+struct_types = text.each_value.flat_map { |source| value_struct_types(source) }.uniq
+text.each do |path, source|
+  source.each_line.with_index(1) do |line, number|
+    code = line.sub(%r{//.*\z}, "")
+    next unless code =~ /\Astatic\s+(?:const\s+)?(?:struct\s+)?(\w+)\s+([^;]*);/
+
+    type = Regexp.last_match(1)
+    next unless struct_types.include?(type)
+
+    Regexp.last_match(2).split(",").each do |declarator|
+      stripped = declarator.strip.sub(/\s*=.*\z/, "")
+      next if stripped.empty? || stripped.include?("*")
+
+      name = stripped.sub(/\[.*\]\z/, "").strip
+      next unless name.match?(/\A\w+\z/)
+      next if REGISTERED_TABLES.include?(name)
+
+      location = "#{File.basename(path)}:#{number}"
+      errors << "#{location}: static #{type} #{name} holds VALUE fields and is not a registered root table"
+    end
+  end
 end
 
 if errors.empty?

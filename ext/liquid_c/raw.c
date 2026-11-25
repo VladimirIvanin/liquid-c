@@ -88,11 +88,19 @@ static VALUE raw_parse_method(VALUE self, VALUE tokens)
 
     VALUE block_delimiter = rb_funcall(self, id_block_delimiter, 0);
     Check_Type(block_delimiter, T_STRING);
-    char *block_delimiter_str = RSTRING_PTR(block_delimiter);
     long block_delimiter_len = RSTRING_LEN(block_delimiter);
+    // tokenizer_next may compact this string when line numbers are enabled.
+    VALUE delimiter_buffer = 0;
+    const char *block_delimiter_bytes = "";
+    if (block_delimiter_len > 0) {
+        char *bytes = ALLOCV_N(char, delimiter_buffer, block_delimiter_len);
+        memcpy(bytes, RSTRING_PTR(block_delimiter), (size_t)block_delimiter_len);
+        block_delimiter_bytes = bytes;
+    }
 
     const char *body = NULL;
     long body_len = 0;
+    bool found_delimiter = false;
 
     while (true) {
         tokenizer_next(tokenizer, &token);
@@ -105,21 +113,29 @@ static VALUE raw_parse_method(VALUE self, VALUE tokens)
 
         if (match_full_token_possibly_invalid(&token, &match)
                 && match.delimiter_len == block_delimiter_len
-                && memcmp(match.delimiter_start, block_delimiter_str, block_delimiter_len) == 0) {
+                && memcmp(match.delimiter_start, block_delimiter_bytes, (size_t)block_delimiter_len) == 0) {
             tokenizer->lstrip_flag = token.len_full >= 3 && token.str_full[token.len_full - 3] == '-';
             body_len += match.body_len;
-            VALUE body_str = rb_enc_str_new(body, body_len, utf8_encoding);
-            rb_ivar_set(self, id_ivar_body, body_str);
-            if (RBASIC_CLASS(self) == cLiquidRaw) {
-                tokenizer->raw_tag_body = body_str;
-            }
-            return Qnil;
+            found_delimiter = true;
+            break;
         }
 
         body_len += token.len_full;
     }
 
-    rb_funcall(self, id_raise_tag_never_closed, 1, rb_funcall(self, id_block_name, 0));
+    RB_GC_GUARD(block_delimiter);
+    ALLOCV_END(delimiter_buffer);
+
+    if (!found_delimiter) {
+        rb_funcall(self, id_raise_tag_never_closed, 1, rb_funcall(self, id_block_name, 0));
+        return Qnil;
+    }
+
+    VALUE body_str = rb_enc_str_new(body, body_len, utf8_encoding);
+    rb_ivar_set(self, id_ivar_body, body_str);
+    if (RBASIC_CLASS(self) == cLiquidRaw) {
+        tokenizer->raw_tag_body = body_str;
+    }
     return Qnil;
 }
 
